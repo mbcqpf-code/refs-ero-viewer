@@ -1,6 +1,7 @@
 import os
 import gc
 import re
+import sys
 import json
 import shutil
 import warnings
@@ -283,38 +284,26 @@ def extract_precomputed_refs(init_dt, period):
 # ==========================================
 PROJ = ccrs.LambertConformal(central_longitude=-97.5, central_latitude=38.5)
 
-# Exceedance Probability Colormap
 ERO_COLORS = ['#32CD32', '#FFFF00', '#FFA500', '#FF0000', '#A52A2A', '#FF00FF']
 CMAP_PROB = ListedColormap(ERO_COLORS)
 BOUNDS_PROB = [5, 15, 25, 40, 55, 70, 100]
 NORM_PROB = BoundaryNorm(BOUNDS_PROB, CMAP_PROB.N)
 
-# Coverage Fraction Colormap
 COV_COLORS = ['#e0f7fa', '#c8e6c9', '#fff59d', '#ffb74d', '#f44336', '#9c27b0']
 CMAP_COV = ListedColormap(COV_COLORS)
 BOUNDS_COV = [1, 5, 10, 25, 50, 75, 100]
 NORM_COV = BoundaryNorm(BOUNDS_COV, CMAP_COV.N)
 
-# RFC Standard FFG Colormap (0.01 to 5.0+ inches)
 FFG_COLORS = [
-    '#e04f39',  # 0.01 - 0.25: coral/red-orange
-    '#f28522',  # 0.25 - 0.50: orange
-    '#fbb034',  # 0.50 - 0.75: amber/gold
-    '#eef641',  # 0.75 - 1.00: chartreuse/lime-yellow
-    '#55cc33',  # 1.00 - 1.50: bright green
-    '#196619',  # 1.50 - 2.00: dark forest green
-    '#7b9ee8',  # 2.00 - 2.50: periwinkle/slate blue
-    '#00d4ff',  # 2.50 - 3.00: bright cyan
-    '#0011cc',  # 3.00 - 4.00: royal blue
-    '#ba68c8',  # 4.00 - 5.00: lavender/medium purple
+    '#e04f39', '#f28522', '#fbb034', '#eef641', '#55cc33',
+    '#196619', '#7b9ee8', '#00d4ff', '#0011cc', '#ba68c8',
 ]
 CMAP_FFG = ListedColormap(FFG_COLORS)
-CMAP_FFG.set_over('#5a187a')  # > 5.0: dark purple/magenta
+CMAP_FFG.set_over('#5a187a')
 BOUNDS_FFG = [0.01, 0.25, 0.5, 0.75, 1.0, 1.5, 2.0, 2.5, 3.0, 4.0, 5.0]
 NORM_FFG = BoundaryNorm(BOUNDS_FFG, CMAP_FFG.N)
 
 def render_plot(data, lats, lons, title, subtitle, cbar_label, filename, out_dir, plot_type="prob"):
-    """Renders standardized meteorological maps."""
     fig, ax = plt.subplots(figsize=(13, 8.5), dpi=110, subplot_kw={"projection": PROJ})
     ax.add_feature(cfeature.LAND, facecolor="#f8f9fa")
     ax.add_feature(cfeature.OCEAN, facecolor="#eef2f5")
@@ -324,20 +313,11 @@ def render_plot(data, lats, lons, title, subtitle, cbar_label, filename, out_dir
     ax.set_extent([-120, -72, 22, 50], crs=ccrs.PlateCarree())
 
     if plot_type == "ffg":
-        cmap = CMAP_FFG
-        norm = NORM_FFG
-        bounds = BOUNDS_FFG
-        extend = "max"
+        cmap, norm, bounds, extend = CMAP_FFG, NORM_FFG, BOUNDS_FFG, "max"
     elif plot_type == "cov":
-        cmap = CMAP_COV
-        norm = NORM_COV
-        bounds = BOUNDS_COV
-        extend = "max"
+        cmap, norm, bounds, extend = CMAP_COV, NORM_COV, BOUNDS_COV, "max"
     else:
-        cmap = CMAP_PROB
-        norm = NORM_PROB
-        bounds = BOUNDS_PROB
-        extend = "max"
+        cmap, norm, bounds, extend = CMAP_PROB, NORM_PROB, BOUNDS_PROB, "max"
 
     if data is not None and np.any(~np.isnan(data)):
         cf = ax.contourf(lons, lats, data, transform=ccrs.PlateCarree(),
@@ -360,24 +340,408 @@ def render_plot(data, lats, lons, title, subtitle, cbar_label, filename, out_dir
     plt.close(fig)
 
 # ==========================================
-# 7. MAIN ENGINE & EXECUTION LOOP
+# 7. MANIFEST & FRONTEND BUILDER
+# ==========================================
+def update_manifest_and_html(periods):
+    all_runs = sorted([d for d in os.listdir(RUNS_DIR) if (RUNS_DIR / d).is_dir()], reverse=True)
+    if len(all_runs) > 10:
+        for old in all_runs[10:]:
+            shutil.rmtree(RUNS_DIR / old, ignore_errors=True)
+    all_runs = all_runs[:10]
+
+    manifest = {
+        "latest": all_runs[0] if all_runs else "",
+        "runs": [{"id": r, "label": datetime.strptime(r, "%Y%m%d_%H").strftime("%Y-%m-%d %Hz")} for r in all_runs],
+        "periods": [{"id": p["id"], "name": p["name"]} for p in periods]
+    }
+    with open(OUTPUT_DIR / "manifest.json", "w") as f:
+        json.dump(manifest, f, indent=2)
+
+    build_frontend_html(OUTPUT_DIR / "index.html")
+
+def build_frontend_html(dest_path):
+    html = """<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>REFS Excessive Rainfall & FFG Interactive Viewer</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <style>
+    :root {
+      --bg: #090d16;
+      --panel: #131b2e;
+      --border: #232f48;
+      --text: #f1f5f9;
+      --muted: #94a3b8;
+      --accent: #2563eb;
+      --accent-hover: #3b82f6;
+    }
+    body {
+      margin: 0; background: var(--bg); color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      display: flex; flex-direction: column; align-items: center;
+    }
+    .header { width: 100%; max-width: 1320px; padding: 12px 20px 4px 20px; text-align: center; }
+    .header h2 { margin: 0 0 4px 0; font-size: 1.35rem; }
+    .header p { margin: 0; color: var(--muted); font-size: 0.85rem; }
+
+    .toolbar {
+      width: 100%; max-width: 1320px; background: var(--panel); border: 1px solid var(--border);
+      border-radius: 8px; padding: 10px 14px; margin: 8px 0; box-sizing: border-box;
+      display: flex; flex-direction: column; gap: 8px;
+    }
+    .row { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; }
+    .btn-group { display: flex; gap: 4px; align-items: center; flex-wrap: wrap; }
+    .btn {
+      background: #1e293b; color: #cbd5e1; border: 1px solid var(--border);
+      padding: 5px 11px; border-radius: 5px; font-size: 12px; font-weight: 600; cursor: pointer; transition: 0.15s;
+    }
+    .btn:hover { background: #334155; color: #fff; }
+    .btn.active { background: var(--accent); color: #fff; border-color: var(--accent-hover); }
+    .btn-ffg { background: #1e3a29; border-color: #2e593e; color: #a7f3d0; }
+    .btn-ffg:hover { background: #264e37; color: #fff; }
+    .btn-ffg.active { background: #059669; border-color: #10b981; color: #fff; }
+    
+    select {
+      background: #0f172a; color: #fff; border: 1px solid var(--border);
+      padding: 4px 8px; border-radius: 5px; font-size: 12px; cursor: pointer;
+    }
+
+    .viewer-container {
+      width: 100%; max-width: 1320px; display: flex; gap: 12px; justify-content: center;
+    }
+    .viewer-card {
+      flex: 1; background: #000; border-radius: 8px; overflow: hidden;
+      box-shadow: 0 10px 25px rgba(0,0,0,0.6); position: relative; border: 1px solid var(--border);
+      display: flex; flex-direction: column;
+    }
+    .pane-toolbar {
+      display: none; background: #0f172a; border-bottom: 1px solid var(--border);
+      padding: 6px 10px; font-size: 11.5px; align-items: center; justify-content: space-between;
+      flex-wrap: wrap; gap: 6px;
+    }
+    .viewer-card img { width: 100%; height: auto; display: block; }
+
+    .footer { margin: 12px 0 20px 0; color: var(--muted); font-size: 11.5px; }
+    kbd { background: #1e293b; border: 1px solid #334155; padding: 2px 5px; border-radius: 3px; }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <h2>REFS Flash Flood Guidance (FFG) & Excessive Rainfall Viewer</h2>
+    <p>Operational 14-Member REFS / HRRR Ensemble Guidance Suite</p>
+  </div>
+
+  <div class="toolbar" id="mainToolbar">
+    <div class="row">
+      <div class="btn-group">
+        <b>Model Run:</b>
+        <button class="btn" onclick="stepRun(-1)">▲ Newer</button>
+        <select id="runSelect" onchange="onMainRunChange()"></select>
+        <button class="btn" onclick="stepRun(1)">▼ Older</button>
+      </div>
+
+      <div class="btn-group" id="periodBox">
+        <b>Synoptic Period:</b>
+        <div id="periodButtons" class="btn-group"></div>
+      </div>
+
+      <div class="btn-group">
+        <b>Layout:</b>
+        <button class="btn active" id="btnSingle" onclick="setLayout('single')">Single</button>
+        <button class="btn" id="btnSplit" onclick="setLayout('split')">Split Screen</button>
+      </div>
+    </div>
+
+    <div class="row" style="border-top: 1px solid var(--border); padding-top: 8px;">
+      <div class="btn-group">
+        <b>Product:</b>
+        <button class="btn active" data-prod="prob_1p0x" onclick="setProduct(this)">1.0x FFG</button>
+        <button class="btn" data-prod="prob_1p5x" onclick="setProduct(this)">1.5x FFG</button>
+        <button class="btn" data-prod="prob_2p0x" onclick="setProduct(this)">2.0x FFG</button>
+        <button class="btn" data-prod="refs_precomputed" onclick="setProduct(this)">Official REFS</button>
+        <span style="border-left: 1px solid var(--border); margin: 0 4px; height: 18px;"></span>
+        <button class="btn" data-prod="coverage_min" onclick="setProduct(this)">Cov (Min)</button>
+        <button class="btn" data-prod="coverage_avg" onclick="setProduct(this)">Cov (Mean)</button>
+        <button class="btn" data-prod="coverage_max" onclick="setProduct(this)">Cov (Max)</button>
+        <span style="border-left: 1px solid var(--border); margin: 0 4px; height: 18px;"></span>
+        <button class="btn btn-ffg" data-prod="ffg_1h" onclick="setProduct(this)">1-hr FFG</button>
+        <button class="btn btn-ffg" data-prod="ffg_3h" onclick="setProduct(this)">3-hr FFG</button>
+        <button class="btn btn-ffg" data-prod="ffg_6h" onclick="setProduct(this)">6-hr FFG</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="viewer-container" id="viewerContainer">
+    <!-- PANE 1 -->
+    <div class="viewer-card" id="cardPrimary">
+      <div class="pane-toolbar" id="pane1Bar">
+        <span style="font-weight:bold; color:#60a5fa;">Pane 1 (Left):</span>
+        <div style="display:flex; gap:6px; align-items:center;">
+          <select id="pane1Run" onchange="updatePane1()"></select>
+          <select id="pane1Period" onchange="updatePane1()"></select>
+          <select id="pane1Prod" onchange="updatePane1()"></select>
+        </div>
+      </div>
+      <img id="imgPrimary" src="" alt="Primary REFS Graphic">
+    </div>
+
+    <!-- PANE 2 -->
+    <div class="viewer-card" id="cardSecondary" style="display:none;">
+      <div class="pane-toolbar" id="pane2Bar">
+        <span style="font-weight:bold; color:#f59e0b;">Pane 2 (Right):</span>
+        <div style="display:flex; gap:6px; align-items:center;">
+          <select id="pane2Run" onchange="updatePane2()"></select>
+          <select id="pane2Period" onchange="updatePane2()"></select>
+          <select id="pane2Prod" onchange="updatePane2()"></select>
+        </div>
+      </div>
+      <img id="imgSecondary" src="" alt="Secondary Graphic">
+    </div>
+  </div>
+
+  <div class="footer">
+    Shortcuts: <kbd>←</kbd> / <kbd>→</kbd> Change Product | <kbd>↑</kbd> / <kbd>↓</kbd> Trend Cycles (dprog/dt) | <kbd>1</kbd>–<kbd>0</kbd> Direct Product Jump | <kbd>S</kbd> Toggle Split.
+  </div>
+
+  <script>
+    let manifest = { runs: [], periods: [] };
+    let currentProd = 'prob_1p0x';
+    let currentPeriod = 'p1';
+    let layoutMode = 'single';
+    const preloadedImages = new Map();
+
+    const PRODUCTS = [
+      { id: 'prob_1p0x', name: '1.0x FFG' },
+      { id: 'prob_1p5x', name: '1.5x FFG' },
+      { id: 'prob_2p0x', name: '2.0x FFG' },
+      { id: 'refs_precomputed', name: 'Official REFS' },
+      { id: 'coverage_min', name: 'Cov (Min)' },
+      { id: 'coverage_avg', name: 'Cov (Mean)' },
+      { id: 'coverage_max', name: 'Cov (Max)' },
+      { id: 'ffg_1h', name: '1-hr FFG' },
+      { id: 'ffg_3h', name: '3-hr FFG' },
+      { id: 'ffg_6h', name: '6-hr FFG' }
+    ];
+
+    async function init() {
+      try {
+        const res = await fetch('manifest.json?t=' + Date.now());
+        manifest = await res.json();
+        
+        const runSel = document.getElementById('runSelect');
+        const optionsHtml = manifest.runs.map((r, i) => 
+          `<option value="${r.id}">${r.label}${i === 0 ? ' (Latest)' : ''}</option>`
+        ).join('');
+        runSel.innerHTML = optionsHtml;
+        runSel.value = manifest.latest;
+
+        const pBox = document.getElementById('periodButtons');
+        pBox.innerHTML = manifest.periods.map((p, i) => 
+          `<button class="btn ${i === 0 ? 'active' : ''}" data-period="${p.id}" onclick="setPeriod(this)">${p.name}</button>`
+        ).join('');
+        
+        if (manifest.periods.length > 0) currentPeriod = manifest.periods[0].id;
+        
+        // Populate Split Screen Dropdowns
+        ['pane1', 'pane2'].forEach(p => {
+          document.getElementById(`${p}Run`).innerHTML = optionsHtml;
+          document.getElementById(`${p}Period`).innerHTML = manifest.periods.map(pr => 
+            `<option value="${pr.id}">${pr.name}</option>`
+          ).join('');
+          document.getElementById(`${p}Prod`).innerHTML = PRODUCTS.map(pr => 
+            `<option value="${pr.id}">${pr.name}</option>`
+          ).join('');
+        });
+
+        // Smart defaults for Split Screen
+        document.getElementById('pane1Run').value = manifest.latest;
+        document.getElementById('pane1Period').value = currentPeriod;
+        document.getElementById('pane1Prod').value = currentProd;
+
+        if (manifest.runs.length > 1) {
+          document.getElementById('pane2Run').value = manifest.runs[1].id; // previous run
+          document.getElementById('pane2Prod').value = currentProd;
+        } else {
+          document.getElementById('pane2Run').value = manifest.latest;
+          document.getElementById('pane2Prod').value = 'prob_2p0x'; // severity contrast
+        }
+        document.getElementById('pane2Period').value = currentPeriod;
+
+        preloadRunImages(manifest.latest);
+        updateSingleViewer();
+      } catch (e) {
+        console.error("Manifest load failed.", e);
+      }
+    }
+
+    function getImageUrl(runId, periodId, prod) {
+      if (prod.startsWith('ffg_')) {
+        return `runs/${runId}/${prod}.png`;
+      }
+      return `runs/${runId}/${periodId}_${prod}.png`;
+    }
+
+    function preloadRunImages(runId) {
+      PRODUCTS.forEach(p => {
+        if (p.id.startsWith('ffg_')) {
+          const u = getImageUrl(runId, 'p1', p.id);
+          if (!preloadedImages.has(u)) {
+            const im = new Image(); im.src = u; preloadedImages.set(u, im);
+          }
+        } else {
+          manifest.periods.forEach(pr => {
+            const u = getImageUrl(runId, pr.id, p.id);
+            if (!preloadedImages.has(u)) {
+              const im = new Image(); im.src = u; preloadedImages.set(u, im);
+            }
+          });
+        }
+      });
+    }
+
+    function setProduct(btn) {
+      document.querySelectorAll('[data-prod]').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      currentProd = btn.getAttribute('data-prod');
+      
+      const pBox = document.getElementById('periodBox');
+      if (currentProd.startsWith('ffg_')) {
+        pBox.style.opacity = '0.4';
+        pBox.style.pointerEvents = 'none';
+      } else {
+        pBox.style.opacity = '1.0';
+        pBox.style.pointerEvents = 'auto';
+      }
+      updateSingleViewer();
+    }
+
+    function setPeriod(btn) {
+      document.querySelectorAll('[data-period]').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      currentPeriod = btn.getAttribute('data-period');
+      updateSingleViewer();
+    }
+
+    function onMainRunChange() {
+      updateSingleViewer();
+    }
+
+    function setLayout(mode) {
+      layoutMode = mode;
+      document.getElementById('btnSingle').classList.toggle('active', mode === 'single');
+      document.getElementById('btnSplit').classList.toggle('active', mode === 'split');
+      
+      const isSplit = mode === 'split';
+      document.getElementById('cardSecondary').style.display = isSplit ? 'flex' : 'none';
+      document.getElementById('pane1Bar').style.display = isSplit ? 'flex' : 'none';
+      document.getElementById('pane2Bar').style.display = isSplit ? 'flex' : 'none';
+
+      if (isSplit) {
+        document.getElementById('pane1Run').value = document.getElementById('runSelect').value;
+        document.getElementById('pane1Period').value = currentPeriod;
+        document.getElementById('pane1Prod').value = currentProd;
+        updatePane1();
+        updatePane2();
+      } else {
+        updateSingleViewer();
+      }
+    }
+
+    function updateSingleViewer() {
+      if (layoutMode === 'split') return;
+      const curRun = document.getElementById('runSelect').value;
+      document.getElementById('imgPrimary').src = getImageUrl(curRun, currentPeriod, currentProd);
+    }
+
+    function updatePane1() {
+      const r = document.getElementById('pane1Run').value;
+      const p = document.getElementById('pane1Period').value;
+      const prod = document.getElementById('pane1Prod').value;
+      document.getElementById('imgPrimary').src = getImageUrl(r, p, prod);
+    }
+
+    function updatePane2() {
+      const r = document.getElementById('pane2Run').value;
+      const p = document.getElementById('pane2Period').value;
+      const prod = document.getElementById('pane2Prod').value;
+      preloadRunImages(r);
+      document.getElementById('imgSecondary').src = getImageUrl(r, p, prod);
+    }
+
+    function stepRun(delta) {
+      const sel = document.getElementById('runSelect');
+      let idx = sel.selectedIndex + delta;
+      if (idx >= 0 && idx < sel.options.length) {
+        sel.selectedIndex = idx;
+        preloadRunImages(sel.value);
+        updateSingleViewer();
+      }
+    }
+
+    function stepProduct(delta) {
+      const prodIds = PRODUCTS.map(p => p.id);
+      let idx = prodIds.indexOf(currentProd) + delta;
+      if (idx < 0) idx = prodIds.length - 1;
+      if (idx >= prodIds.length) idx = 0;
+      const nextBtn = document.querySelector(`[data-prod="${prodIds[idx]}"]`);
+      if (nextBtn) setProduct(nextBtn);
+    }
+
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'ArrowUp') { e.preventDefault(); stepRun(-1); }
+      if (e.key === 'ArrowDown') { e.preventDefault(); stepRun(1); }
+      if (e.key === 'ArrowLeft') { e.preventDefault(); stepProduct(-1); }
+      if (e.key === 'ArrowRight') { e.preventDefault(); stepProduct(1); }
+      if (e.key === 's' || e.key === 'S') { setLayout(layoutMode === 'single' ? 'split' : 'single'); }
+      if (e.key >= '1' && e.key <= '9') {
+        const target = PRODUCTS[parseInt(e.key) - 1].id;
+        const btn = document.querySelector(`[data-prod="${target}"]`);
+        if (btn) setProduct(btn);
+      }
+      if (e.key === '0') {
+        const btn = document.querySelector(`[data-prod="${PRODUCTS[9].id}"]`);
+        if (btn) setProduct(btn);
+      }
+    });
+
+    init();
+  </script>
+</body>
+</html>
+"""
+    with open(dest_path, "w") as f:
+        f.write(html)
+
+# ==========================================
+# 8. MAIN PRODUCTION ENGINE
 # ==========================================
 def run_production():
     init_dt = get_latest_cycle_dt()
     cycle_id = init_dt.strftime("%Y%m%d_%H")
     current_run_dir = RUNS_DIR / cycle_id
+    periods = build_synoptic_periods(init_dt)
+
+    # CHECK IF ALREADY COMPLETED (FAST SKIP LOGIC)
+    flag_file = current_run_dir / "complete.json"
+    if current_run_dir.exists() and flag_file.exists():
+        print(f"\n==========================================")
+        print(f"Cycle {cycle_id} is already downloaded and fully processed.")
+        print(f"Skipping heavy downloads. Verifying manifest and HTML...")
+        print(f"==========================================")
+        update_manifest_and_html(periods)
+        print("Done! Exiting cleanly in < 3 seconds.")
+        return
+
     current_run_dir.mkdir(parents=True, exist_ok=True)
 
     print(f"\n==========================================")
     print(f"PROCESSING REFS ERO VIEWER: {cycle_id}")
     print(f"==========================================")
 
-    periods = build_synoptic_periods(init_dt)
     full_catalog = get_member_catalog(init_dt)
 
-    ref_lats, ref_lons, ffg = None, None, None
-
-    # Step 1: Pre-acquire Grid Geometry & Render FFG Baselines (Once per Run)
+    # 1. Fetch grid geometry and render FFG baseline maps
     test_task = get_member_file_info(full_catalog[0], 1)
     download_apcp_slice(test_task[0], test_task[1], test_task[2], test_task[3])
     ds_init = xr.open_dataset(test_task[2], engine="cfgrib")
@@ -400,7 +764,7 @@ def run_production():
         )
         print(f" -> Generated ffg_{dur_key}.png")
 
-    # Step 2: Loop Over Synoptic Periods
+    # 2. Process synoptic periods
     for p in periods:
         p_id = p["id"]
         req_lead_max = p["f_end"]
@@ -417,7 +781,6 @@ def run_production():
         envelope_sum = {t: np.zeros((1059, 1799), dtype=np.float32) for t in THRESHOLDS}
         member_coverages = []
 
-        # Process each valid member
         for m_idx, mem in enumerate(valid_mems):
             print(f"    [{m_idx + 1}/{k_members}] Streaming member: {mem['id']}")
             fxx_list = list(range(p["f_start"], p["f_end"] + 1))
@@ -439,7 +802,7 @@ def run_production():
                 except Exception:
                     qpf_list.append(np.zeros((1059, 1799), dtype=np.float32))
 
-            qpf_stack = np.stack(qpf_list, axis=0)  # Shape: (hours, Y, X)
+            qpf_stack = np.stack(qpf_list, axis=0)
             nt = qpf_stack.shape[0]
             max_ratio = np.zeros((1059, 1799), dtype=np.float32)
 
@@ -509,314 +872,13 @@ def run_production():
         del member_coverages, cov_stack
         gc.collect()
 
-    # ==========================================
-    # 8. ARCHIVE MAINTENANCE & MANIFEST
-    # ==========================================
-    all_runs = sorted([d for d in os.listdir(RUNS_DIR) if (RUNS_DIR / d).is_dir()], reverse=True)
-    if len(all_runs) > 10:
-        for old in all_runs[10:]:
-            shutil.rmtree(RUNS_DIR / old, ignore_errors=True)
-    all_runs = all_runs[:10]
+    # 3. Mark run complete
+    with open(flag_file, "w") as f:
+        json.dump({"cycle": cycle_id, "completed_at": datetime.now(timezone.utc).isoformat()}, f)
 
-    manifest = {
-        "latest": all_runs[0],
-        "runs": [{"id": r, "label": datetime.strptime(r, "%Y%m%d_%H").strftime("%Y-%m-%d %Hz")} for r in all_runs],
-        "periods": [{"id": p["id"], "name": p["name"]} for p in periods]
-    }
-    with open(OUTPUT_DIR / "manifest.json", "w") as f:
-        json.dump(manifest, f, indent=2)
-
-    build_frontend_html(OUTPUT_DIR / "index.html")
+    # 4. Update manifest and HTML frontend
+    update_manifest_and_html(periods)
     print(f"\nExecution Complete! Output archived in {current_run_dir}")
-
-def build_frontend_html(dest_path):
-    html = """<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <title>REFS Excessive Rainfall & FFG Interactive Viewer</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <style>
-    :root {
-      --bg: #090d16;
-      --panel: #131b2e;
-      --border: #232f48;
-      --text: #f1f5f9;
-      --muted: #94a3b8;
-      --accent: #2563eb;
-      --accent-hover: #3b82f6;
-    }
-    body {
-      margin: 0; background: var(--bg); color: var(--text);
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-      display: flex; flex-direction: column; align-items: center;
-    }
-    .header { width: 100%; max-width: 1320px; padding: 12px 20px 4px 20px; text-align: center; }
-    .header h2 { margin: 0 0 4px 0; font-size: 1.35rem; }
-    .header p { margin: 0; color: var(--muted); font-size: 0.85rem; }
-
-    .toolbar {
-      width: 100%; max-width: 1320px; background: var(--panel); border: 1px solid var(--border);
-      border-radius: 8px; padding: 10px 14px; margin: 8px 0; box-sizing: border-box;
-      display: flex; flex-direction: column; gap: 8px;
-    }
-    .row { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; }
-    .btn-group { display: flex; gap: 4px; align-items: center; flex-wrap: wrap; }
-    .btn {
-      background: #1e293b; color: #cbd5e1; border: 1px solid var(--border);
-      padding: 5px 11px; border-radius: 5px; font-size: 12px; font-weight: 600; cursor: pointer; transition: 0.15s;
-    }
-    .btn:hover { background: #334155; color: #fff; }
-    .btn.active { background: var(--accent); color: #fff; border-color: var(--accent-hover); }
-    .btn-ffg { background: #1e3a29; border-color: #2e593e; color: #a7f3d0; }
-    .btn-ffg:hover { background: #264e37; color: #fff; }
-    .btn-ffg.active { background: #059669; border-color: #10b981; color: #fff; }
-    
-    select {
-      background: #0f172a; color: #fff; border: 1px solid var(--border);
-      padding: 4px 8px; border-radius: 5px; font-size: 12px; cursor: pointer;
-    }
-
-    .viewer-container {
-      width: 100%; max-width: 1320px; display: flex; gap: 10px; justify-content: center;
-    }
-    .viewer-card {
-      flex: 1; background: #000; border-radius: 8px; overflow: hidden;
-      box-shadow: 0 10px 25px rgba(0,0,0,0.6); position: relative; border: 1px solid var(--border);
-    }
-    .viewer-card img { width: 100%; height: auto; display: block; }
-    .card-label {
-      position: absolute; top: 10px; left: 10px; background: rgba(15, 23, 42, 0.85);
-      border: 1px solid var(--border); padding: 3px 8px; border-radius: 4px;
-      font-size: 11px; font-weight: bold; pointer-events: none;
-    }
-
-    .footer { margin: 12px 0 20px 0; color: var(--muted); font-size: 11.5px; }
-    kbd { background: #1e293b; border: 1px solid #334155; padding: 2px 5px; border-radius: 3px; }
-  </style>
-</head>
-<body>
-  <div class="header">
-    <h2>REFS Flash Flood Guidance (FFG) & Excessive Rainfall Viewer</h2>
-    <p>Operational 14-Member REFS / HRRR Ensemble Guidance Suite</p>
-  </div>
-
-  <div class="toolbar">
-    <div class="row">
-      <div class="btn-group">
-        <b>Model Run:</b>
-        <button class="btn" onclick="stepRun(-1)">▲ Newer</button>
-        <select id="runSelect" onchange="updateViewers()"></select>
-        <button class="btn" onclick="stepRun(1)">▼ Older</button>
-      </div>
-
-      <div class="btn-group" id="periodBox">
-        <b>Synoptic Period:</b>
-        <div id="periodButtons" class="btn-group"></div>
-      </div>
-
-      <div class="btn-group">
-        <b>Layout:</b>
-        <button class="btn active" id="btnSingle" onclick="setLayout('single')">Single</button>
-        <button class="btn" id="btnSplit" onclick="setLayout('split')">Split Screen</button>
-      </div>
-    </div>
-
-    <div class="row" style="border-top: 1px solid var(--border); padding-top: 8px;">
-      <div class="btn-group">
-        <b>Product:</b>
-        <button class="btn active" data-prod="prob_1p0x" onclick="setProduct(this)">1.0x FFG</button>
-        <button class="btn" data-prod="prob_1p5x" onclick="setProduct(this)">1.5x FFG</button>
-        <button class="btn" data-prod="prob_2p0x" onclick="setProduct(this)">2.0x FFG</button>
-        <button class="btn" data-prod="refs_precomputed" onclick="setProduct(this)">Official REFS</button>
-        <span style="border-left: 1px solid var(--border); margin: 0 4px; height: 18px;"></span>
-        <button class="btn" data-prod="coverage_min" onclick="setProduct(this)">Cov (Min)</button>
-        <button class="btn" data-prod="coverage_avg" onclick="setProduct(this)">Cov (Mean)</button>
-        <button class="btn" data-prod="coverage_max" onclick="setProduct(this)">Cov (Max)</button>
-        <span style="border-left: 1px solid var(--border); margin: 0 4px; height: 18px;"></span>
-        <button class="btn btn-ffg" data-prod="ffg_1h" onclick="setProduct(this)">1-hr FFG</button>
-        <button class="btn btn-ffg" data-prod="ffg_3h" onclick="setProduct(this)">3-hr FFG</button>
-        <button class="btn btn-ffg" data-prod="ffg_6h" onclick="setProduct(this)">6-hr FFG</button>
-      </div>
-    </div>
-  </div>
-
-  <div class="viewer-container" id="viewerContainer">
-    <div class="viewer-card" id="cardPrimary">
-      <div class="card-label" id="labelPrimary">Primary</div>
-      <img id="imgPrimary" src="" alt="Primary REFS Graphic">
-    </div>
-    <div class="viewer-card" id="cardSecondary" style="display:none;">
-      <div class="card-label" id="labelSecondary">Comparison (Previous Run)</div>
-      <img id="imgSecondary" src="" alt="Secondary Graphic">
-    </div>
-  </div>
-
-  <div class="footer">
-    Shortcuts: <kbd>←</kbd> / <kbd>→</kbd> Change Product | <kbd>↑</kbd> / <kbd>↓</kbd> Trend Cycles (dprog/dt) | <kbd>1</kbd>–<kbd>0</kbd> Quick Jump | <kbd>S</kbd> Toggle Split.
-  </div>
-
-  <script>
-    let manifest = { runs: [], periods: [] };
-    let currentProd = 'prob_1p0x';
-    let currentPeriod = 'p1';
-    let layoutMode = 'single';
-    const preloadedImages = new Map();
-
-    const PRODUCTS = [
-      'prob_1p0x', 'prob_1p5x', 'prob_2p0x', 'refs_precomputed',
-      'coverage_min', 'coverage_avg', 'coverage_max',
-      'ffg_1h', 'ffg_3h', 'ffg_6h'
-    ];
-
-    async function init() {
-      try {
-        const res = await fetch('manifest.json?t=' + Date.now());
-        manifest = await res.json();
-        
-        const runSel = document.getElementById('runSelect');
-        runSel.innerHTML = manifest.runs.map((r, i) => 
-          `<option value="${r.id}">${r.label}${i === 0 ? ' (Latest)' : ''}</option>`
-        ).join('');
-        runSel.value = manifest.latest;
-
-        const pBox = document.getElementById('periodButtons');
-        pBox.innerHTML = manifest.periods.map((p, i) => 
-          `<button class="btn ${i === 0 ? 'active' : ''}" data-period="${p.id}" onclick="setPeriod(this)">${p.name}</button>`
-        ).join('');
-        
-        if (manifest.periods.length > 0) currentPeriod = manifest.periods[0].id;
-        
-        preloadRunImages(manifest.latest);
-        updateViewers();
-      } catch (e) {
-        console.error("Manifest load failed.", e);
-      }
-    }
-
-    function getImageUrl(runId, periodId, prod) {
-      if (prod.startsWith('ffg_')) {
-        return `runs/${runId}/${prod}.png`;
-      }
-      return `runs/${runId}/${periodId}_${prod}.png`;
-    }
-
-    function preloadRunImages(runId) {
-      PRODUCTS.forEach(prod => {
-        if (prod.startsWith('ffg_')) {
-          const u = getImageUrl(runId, 'p1', prod);
-          if (!preloadedImages.has(u)) {
-            const im = new Image();
-            im.src = u;
-            preloadedImages.set(u, im);
-          }
-        } else {
-          manifest.periods.forEach(p => {
-            const u = getImageUrl(runId, p.id, prod);
-            if (!preloadedImages.has(u)) {
-              const im = new Image();
-              im.src = u;
-              preloadedImages.set(u, im);
-            }
-          });
-        }
-      });
-    }
-
-    function setProduct(btn) {
-      document.querySelectorAll('[data-prod]').forEach(b => b.classList.remove('active'));
-      btn.classList.add('active');
-      currentProd = btn.getAttribute('data-prod');
-      
-      const pBox = document.getElementById('periodBox');
-      if (currentProd.startsWith('ffg_')) {
-        pBox.style.opacity = '0.4';
-        pBox.style.pointerEvents = 'none';
-      } else {
-        pBox.style.opacity = '1.0';
-        pBox.style.pointerEvents = 'auto';
-      }
-      updateViewers();
-    }
-
-    function setPeriod(btn) {
-      document.querySelectorAll('[data-period]').forEach(b => b.classList.remove('active'));
-      btn.classList.add('active');
-      currentPeriod = btn.getAttribute('data-period');
-      updateViewers();
-    }
-
-    function setLayout(mode) {
-      layoutMode = mode;
-      document.getElementById('btnSingle').classList.toggle('active', mode === 'single');
-      document.getElementById('btnSplit').classList.toggle('active', mode === 'split');
-      document.getElementById('cardSecondary').style.display = mode === 'split' ? 'block' : 'none';
-      updateViewers();
-    }
-
-    function updateViewers() {
-      const runSel = document.getElementById('runSelect');
-      const curRun = runSel.value;
-      const primaryUrl = getImageUrl(curRun, currentPeriod, currentProd);
-      document.getElementById('imgPrimary').src = primaryUrl;
-      document.getElementById('labelPrimary').textContent = `${runSel.options[runSel.selectedIndex].text}`;
-
-      if (layoutMode === 'split') {
-        const nextIdx = runSel.selectedIndex + 1;
-        if (nextIdx < runSel.options.length) {
-          const prevRun = runSel.options[nextIdx].value;
-          preloadRunImages(prevRun);
-          document.getElementById('imgSecondary').src = getImageUrl(prevRun, currentPeriod, currentProd);
-          document.getElementById('labelSecondary').textContent = `Prior Run: ${runSel.options[nextIdx].text}`;
-        } else {
-          document.getElementById('imgSecondary').src = primaryUrl;
-          document.getElementById('labelSecondary').textContent = `No earlier cycle in archive`;
-        }
-      }
-    }
-
-    function stepRun(delta) {
-      const sel = document.getElementById('runSelect');
-      let idx = sel.selectedIndex + delta;
-      if (idx >= 0 && idx < sel.options.length) {
-        sel.selectedIndex = idx;
-        preloadRunImages(sel.value);
-        updateViewers();
-      }
-    }
-
-    function stepProduct(delta) {
-      let idx = PRODUCTS.indexOf(currentProd) + delta;
-      if (idx < 0) idx = PRODUCTS.length - 1;
-      if (idx >= PRODUCTS.length) idx = 0;
-      const nextBtn = document.querySelector(`[data-prod="${PRODUCTS[idx]}"]`);
-      if (nextBtn) setProduct(nextBtn);
-    }
-
-    document.addEventListener('keydown', (e) => {
-      if (e.key === 'ArrowUp') { e.preventDefault(); stepRun(-1); }
-      if (e.key === 'ArrowDown') { e.preventDefault(); stepRun(1); }
-      if (e.key === 'ArrowLeft') { e.preventDefault(); stepProduct(-1); }
-      if (e.key === 'ArrowRight') { e.preventDefault(); stepProduct(1); }
-      if (e.key === 's' || e.key === 'S') { setLayout(layoutMode === 'single' ? 'split' : 'single'); }
-      if (e.key >= '1' && e.key <= '9') {
-        const target = PRODUCTS[parseInt(e.key) - 1];
-        const btn = document.querySelector(`[data-prod="${target}"]`);
-        if (btn) setProduct(btn);
-      }
-      if (e.key === '0') {
-        const btn = document.querySelector(`[data-prod="${PRODUCTS[9]}"]`);
-        if (btn) setProduct(btn);
-      }
-    });
-
-    init();
-  </script>
-</body>
-</html>
-"""
-    with open(dest_path, "w") as f:
-        f.write(html)
 
 if __name__ == "__main__":
     run_production()
