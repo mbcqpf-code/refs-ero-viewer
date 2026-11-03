@@ -45,7 +45,6 @@ FOOTPRINT_SUM = float(np.sum(CIRCULAR_FOOTPRINT))
 # 2. DYNAMIC CYCLE & PERIOD RESOLVER
 # ==========================================
 def get_latest_cycle_dt():
-    """Identifies the most recent 6-hourly cycle available on AWS S3."""
     now = datetime.now(timezone.utc)
     anchor = now.replace(minute=0, second=0, microsecond=0)
     for h_back in range(0, 36, 6):
@@ -54,7 +53,6 @@ def get_latest_cycle_dt():
         cand = cand.replace(hour=cycle_hour)
         date_str = cand.strftime("%Y%m%d")
         
-        # Test AWS availability using RRFS control f001
         test_url = f"https://noaa-rrfs-ops-pds.s3.amazonaws.com/rrfs.{date_str}/{cycle_hour:02d}/rrfs.t{cycle_hour:02d}z.2dfld.3km.f001.conus.grib2.idx"
         try:
             r = requests.head(test_url, timeout=4)
@@ -66,9 +64,6 @@ def get_latest_cycle_dt():
     raise RuntimeError("No recent REFS cycle found on AWS Open Data.")
 
 def build_synoptic_periods(init_dt):
-    """
-    Constructs 12Z-to-12Z synoptic periods based on initialization hour.
-    """
     cycle = init_dt.hour
     periods = []
 
@@ -107,11 +102,9 @@ def build_synoptic_periods(init_dt):
 # 3. MEMBER SPECIFICATIONS & S3 FETCHER
 # ==========================================
 def get_member_catalog(init_dt):
-    """Defines the 14 possible members, their max forecast horizons, and time offsets."""
     prev_dt = init_dt - timedelta(hours=6)
     catalog = []
 
-    # Current cycle (T+0)
     for i in range(1, 6):
         catalog.append({"id": f"m{i:03d}_t0", "type": f"m{i:03d}", "date": init_dt.strftime("%Y%m%d"),
                         "cycle": init_dt.hour, "max_lead": 60, "offset": 0})
@@ -120,7 +113,6 @@ def get_member_catalog(init_dt):
     catalog.append({"id": "hrrr_t0", "type": "hrrr", "date": init_dt.strftime("%Y%m%d"),
                     "cycle": init_dt.hour, "max_lead": 48, "offset": 0})
 
-    # Lagged cycle (T-6)
     for i in range(1, 6):
         catalog.append({"id": f"m{i:03d}_lag6", "type": f"m{i:03d}", "date": prev_dt.strftime("%Y%m%d"),
                         "cycle": prev_dt.hour, "max_lead": 54, "offset": 6})
@@ -132,7 +124,6 @@ def get_member_catalog(init_dt):
     return catalog
 
 def download_apcp_slice(grib_url, idx_url, dest_path, fxx):
-    """Pulls 1-hr APCP byte-range slice from AWS S3."""
     if dest_path.exists() and dest_path.stat().st_size > 1000:
         return True
 
@@ -169,7 +160,6 @@ def download_apcp_slice(grib_url, idx_url, dest_path, fxx):
     return False
 
 def get_member_file_info(mem, lead_rel):
-    """Maps relative lead time to model cycle forecast hour and S3 URLs."""
     fxx_actual = lead_rel + mem["offset"]
     date_str = mem["date"]
     cycle = mem["cycle"]
@@ -194,7 +184,6 @@ def get_member_file_info(mem, lead_rel):
 # 4. FFG RETRIEVAL & CONUS GRID ALIGNMENT
 # ==========================================
 def get_aligned_ffg(ref_lats, ref_lons, init_dt):
-    """Retrieves operational IEM 5km FFG mosaic and aligns to the 3-km grid."""
     date_path = init_dt.strftime("%Y/%m/%d")
     date_str = init_dt.strftime("%Y%m%d%H")
     ffg_url = f"https://mesonet.agron.iastate.edu/archive/data/{date_path}/model/ffg/5kmffg_{date_str}.grib2"
@@ -229,7 +218,6 @@ def get_aligned_ffg(ref_lats, ref_lons, init_dt):
 # 5. PRE-COMPUTED REFS PPFFG FETCHER
 # ==========================================
 def extract_precomputed_refs(init_dt, period):
-    """Pulls official pre-computed PPFFG fields from REFS ffri ensprod."""
     cycle = init_dt.hour
     date_str = init_dt.strftime("%Y%m%d")
     max_ppffg = None
@@ -294,17 +282,38 @@ def extract_precomputed_refs(init_dt, period):
 # 6. GRAPHICS RENDERING SYSTEM
 # ==========================================
 PROJ = ccrs.LambertConformal(central_longitude=-97.5, central_latitude=38.5)
+
+# Exceedance Probability Colormap
 ERO_COLORS = ['#32CD32', '#FFFF00', '#FFA500', '#FF0000', '#A52A2A', '#FF00FF']
 CMAP_PROB = ListedColormap(ERO_COLORS)
 BOUNDS_PROB = [5, 15, 25, 40, 55, 70, 100]
 NORM_PROB = BoundaryNorm(BOUNDS_PROB, CMAP_PROB.N)
 
+# Coverage Fraction Colormap
 COV_COLORS = ['#e0f7fa', '#c8e6c9', '#fff59d', '#ffb74d', '#f44336', '#9c27b0']
 CMAP_COV = ListedColormap(COV_COLORS)
 BOUNDS_COV = [1, 5, 10, 25, 50, 75, 100]
 NORM_COV = BoundaryNorm(BOUNDS_COV, CMAP_COV.N)
 
-def render_plot(data, lats, lons, title, subtitle, cbar_label, filename, out_dir, is_coverage=False):
+# RFC Standard FFG Colormap (0.01 to 5.0+ inches)
+FFG_COLORS = [
+    '#e04f39',  # 0.01 - 0.25: coral/red-orange
+    '#f28522',  # 0.25 - 0.50: orange
+    '#fbb034',  # 0.50 - 0.75: amber/gold
+    '#eef641',  # 0.75 - 1.00: chartreuse/lime-yellow
+    '#55cc33',  # 1.00 - 1.50: bright green
+    '#196619',  # 1.50 - 2.00: dark forest green
+    '#7b9ee8',  # 2.00 - 2.50: periwinkle/slate blue
+    '#00d4ff',  # 2.50 - 3.00: bright cyan
+    '#0011cc',  # 3.00 - 4.00: royal blue
+    '#ba68c8',  # 4.00 - 5.00: lavender/medium purple
+]
+CMAP_FFG = ListedColormap(FFG_COLORS)
+CMAP_FFG.set_over('#5a187a')  # > 5.0: dark purple/magenta
+BOUNDS_FFG = [0.01, 0.25, 0.5, 0.75, 1.0, 1.5, 2.0, 2.5, 3.0, 4.0, 5.0]
+NORM_FFG = BoundaryNorm(BOUNDS_FFG, CMAP_FFG.N)
+
+def render_plot(data, lats, lons, title, subtitle, cbar_label, filename, out_dir, plot_type="prob"):
     """Renders standardized meteorological maps."""
     fig, ax = plt.subplots(figsize=(13, 8.5), dpi=110, subplot_kw={"projection": PROJ})
     ax.add_feature(cfeature.LAND, facecolor="#f8f9fa")
@@ -314,13 +323,25 @@ def render_plot(data, lats, lons, title, subtitle, cbar_label, filename, out_dir
     ax.add_feature(cfeature.STATES, linewidth=0.4, edgecolor="#666666", linestyle=":")
     ax.set_extent([-120, -72, 22, 50], crs=ccrs.PlateCarree())
 
-    cmap = CMAP_COV if is_coverage else CMAP_PROB
-    norm = NORM_COV if is_coverage else NORM_PROB
-    bounds = BOUNDS_COV if is_coverage else BOUNDS_PROB
+    if plot_type == "ffg":
+        cmap = CMAP_FFG
+        norm = NORM_FFG
+        bounds = BOUNDS_FFG
+        extend = "max"
+    elif plot_type == "cov":
+        cmap = CMAP_COV
+        norm = NORM_COV
+        bounds = BOUNDS_COV
+        extend = "max"
+    else:
+        cmap = CMAP_PROB
+        norm = NORM_PROB
+        bounds = BOUNDS_PROB
+        extend = "max"
 
     if data is not None and np.any(~np.isnan(data)):
         cf = ax.contourf(lons, lats, data, transform=ccrs.PlateCarree(),
-                         levels=bounds, cmap=cmap, norm=norm, extend="max")
+                         levels=bounds, cmap=cmap, norm=norm, extend=extend)
     else:
         ax.text(0.5, 0.5, "NO THREAT DETECTED IN THIS WINDOW", transform=ax.transAxes,
                 fontsize=18, color="gray", ha="center", va="center", fontweight="bold", alpha=0.6)
@@ -331,7 +352,7 @@ def render_plot(data, lats, lons, title, subtitle, cbar_label, filename, out_dir
     sm = plt.cm.ScalarMappable(cmap=cmap, norm=norm)
     cbar = fig.colorbar(sm, cax=cbar_ax, orientation="horizontal")
     cbar.set_ticks(bounds)
-    cbar.ax.set_xticklabels([f"{b}%" for b in bounds], fontsize=10)
+    cbar.ax.set_xticklabels([f"{b}" if plot_type == "ffg" else f"{b}%" for b in bounds], fontsize=10)
     cbar.set_label(cbar_label, fontsize=11, fontweight="bold")
 
     plt.subplots_adjust(bottom=0.12)
@@ -352,11 +373,34 @@ def run_production():
     print(f"==========================================")
 
     periods = build_synoptic_periods(init_dt)
-    catalog = get_member_file_info(get_member_catalog(init_dt)[0], 1)  # Test ref
     full_catalog = get_member_catalog(init_dt)
 
     ref_lats, ref_lons, ffg = None, None, None
 
+    # Step 1: Pre-acquire Grid Geometry & Render FFG Baselines (Once per Run)
+    test_task = get_member_file_info(full_catalog[0], 1)
+    download_apcp_slice(test_task[0], test_task[1], test_task[2], test_task[3])
+    ds_init = xr.open_dataset(test_task[2], engine="cfgrib")
+    ref_lats = ds_init.latitude.values
+    ref_lons = ds_init.longitude.values
+    ds_init.close()
+    if test_task[2].exists():
+        test_task[2].unlink()
+
+    print("\n--- Rendering RFC 5km Flash Flood Guidance (FFG) Baselines ---")
+    ffg = get_aligned_ffg(ref_lats, ref_lons, init_dt)
+
+    for dur_key, dur_label in [("1h", "1 HR"), ("3h", "3 HR"), ("6h", "6 HR")]:
+        render_plot(
+            ffg[dur_key], ref_lats, ref_lons,
+            f"{init_dt.strftime('%H')}Z 5km RFC {dur_label} FFG (inches)",
+            f"Antecedent Flash Flood Guidance valid at Model Initialization ({init_dt.strftime('%Y-%m-%d %H')}Z)",
+            "Inches",
+            f"ffg_{dur_key}.png", current_run_dir, plot_type="ffg"
+        )
+        print(f" -> Generated ffg_{dur_key}.png")
+
+    # Step 2: Loop Over Synoptic Periods
     for p in periods:
         p_id = p["id"]
         req_lead_max = p["f_end"]
@@ -391,10 +435,6 @@ def run_production():
                     ds = xr.open_dataset(fpath, engine="cfgrib")
                     v = list(ds.data_vars)[0]
                     qpf_list.append((ds[v] / 25.4).values.astype(np.float32))
-                    if ref_lats is None:
-                        ref_lats = ds.latitude.values
-                        ref_lons = ds.longitude.values
-                        ffg = get_aligned_ffg(ref_lats, ref_lons, init_dt)
                     ds.close()
                 except Exception:
                     qpf_list.append(np.zeros((1059, 1799), dtype=np.float32))
@@ -415,26 +455,22 @@ def run_production():
                     with np.errstate(divide="ignore", invalid="ignore"):
                         max_ratio = np.fmax(max_ratio, q6 / ffg["6h"])
 
-            # 1. Accumulate NMEP envelopes for 1.0x, 1.5x, 2.0x
             for t_val in THRESHOLDS:
                 bin_exceed = (max_ratio >= t_val).astype(np.float32)
                 dilated = maximum_filter(bin_exceed, footprint=CIRCULAR_FOOTPRINT)
                 envelope_sum[t_val] += dilated
 
-            # 2. Compute this member's 40km neighborhood coverage percentage
             bin_1x = (max_ratio >= 1.0).astype(np.float32)
             cov_grid = convolve(bin_1x, CIRCULAR_FOOTPRINT, mode="constant", cval=0.0)
             cov_pct = (cov_grid / FOOTPRINT_SUM) * 100.0
             member_coverages.append(cov_pct.astype(np.float16))
 
-            # Disk and memory cleanup
             for _, _, fpath, _ in tasks:
                 if fpath.exists():
                     fpath.unlink()
             del qpf_stack, max_ratio
             gc.collect()
 
-        # Compute probability fields
         valid_range_str = f"Valid: {p['valid_start'].strftime('%Y-%m-%d %H')}Z – {p['valid_end'].strftime('%Y-%m-%d %H')}Z"
         sub_title = f"{p['name']} | {valid_range_str} ({k_members}-Member Ensemble Blend)"
 
@@ -445,17 +481,15 @@ def run_production():
             render_plot(data_disp, ref_lats, ref_lons,
                         f"REFS {init_dt.strftime('%Y%m%d %H')}z: Probability of Exceeding {t_val}x FFG",
                         sub_title, "40-km Neighborhood Probability of Exceedance (%) [Smoothed]",
-                        fname, current_run_dir)
+                        fname, current_run_dir, plot_type="prob")
 
-        # Pre-computed REFS ffri
         refs_ppffg = extract_precomputed_refs(init_dt, p)
         render_plot(refs_ppffg, ref_lats, ref_lons,
                     f"REFS {init_dt.strftime('%Y%m%d %H')}z: Official Pre-Computed Max FFG Exceedance",
                     f"{p['name']} | {valid_range_str} (NCEP Operational ffri)",
                     "Official REFS Exceedance Probability (%) [Smoothed]",
-                    f"{p_id}_refs_precomputed.png", current_run_dir)
+                    f"{p_id}_refs_precomputed.png", current_run_dir, plot_type="prob")
 
-        # Compute Coverage Ensemble Stats (Min, Avg, Max)
         cov_stack = np.stack(member_coverages, axis=0)
         c_min = np.min(cov_stack, axis=0).astype(np.float32)
         c_avg = np.mean(cov_stack, axis=0).astype(np.float32)
@@ -470,7 +504,7 @@ def run_production():
             render_plot(c_disp, ref_lats, ref_lons,
                         f"REFS {init_dt.strftime('%Y%m%d %H')}z: 1.0x FFG Exceedance Coverage ({c_label})",
                         sub_title, "40-km Neighborhood Fraction of Exceedance (%)",
-                        fname, current_run_dir, is_coverage=True)
+                        fname, current_run_dir, plot_type="cov")
 
         del member_coverages, cov_stack
         gc.collect()
@@ -492,7 +526,6 @@ def run_production():
     with open(OUTPUT_DIR / "manifest.json", "w") as f:
         json.dump(manifest, f, indent=2)
 
-    # Build Frontend HTML
     build_frontend_html(OUTPUT_DIR / "index.html")
     print(f"\nExecution Complete! Output archived in {current_run_dir}")
 
@@ -518,12 +551,12 @@ def build_frontend_html(dest_path):
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
       display: flex; flex-direction: column; align-items: center;
     }
-    .header { width: 100%; max-width: 1300px; padding: 12px 20px 4px 20px; text-align: center; }
+    .header { width: 100%; max-width: 1320px; padding: 12px 20px 4px 20px; text-align: center; }
     .header h2 { margin: 0 0 4px 0; font-size: 1.35rem; }
     .header p { margin: 0; color: var(--muted); font-size: 0.85rem; }
 
     .toolbar {
-      width: 100%; max-width: 1300px; background: var(--panel); border: 1px solid var(--border);
+      width: 100%; max-width: 1320px; background: var(--panel); border: 1px solid var(--border);
       border-radius: 8px; padding: 10px 14px; margin: 8px 0; box-sizing: border-box;
       display: flex; flex-direction: column; gap: 8px;
     }
@@ -535,16 +568,30 @@ def build_frontend_html(dest_path):
     }
     .btn:hover { background: #334155; color: #fff; }
     .btn.active { background: var(--accent); color: #fff; border-color: var(--accent-hover); }
+    .btn-ffg { background: #1e3a29; border-color: #2e593e; color: #a7f3d0; }
+    .btn-ffg:hover { background: #264e37; color: #fff; }
+    .btn-ffg.active { background: #059669; border-color: #10b981; color: #fff; }
+    
     select {
       background: #0f172a; color: #fff; border: 1px solid var(--border);
       padding: 4px 8px; border-radius: 5px; font-size: 12px; cursor: pointer;
     }
+
+    .viewer-container {
+      width: 100%; max-width: 1320px; display: flex; gap: 10px; justify-content: center;
+    }
     .viewer-card {
-      width: 100%; max-width: 1250px; background: #000; border-radius: 8px;
-      overflow: hidden; box-shadow: 0 10px 25px rgba(0,0,0,0.6); position: relative;
+      flex: 1; background: #000; border-radius: 8px; overflow: hidden;
+      box-shadow: 0 10px 25px rgba(0,0,0,0.6); position: relative; border: 1px solid var(--border);
     }
     .viewer-card img { width: 100%; height: auto; display: block; }
-    .footer { margin: 10px 0 20px 0; color: var(--muted); font-size: 11.5px; }
+    .card-label {
+      position: absolute; top: 10px; left: 10px; background: rgba(15, 23, 42, 0.85);
+      border: 1px solid var(--border); padding: 3px 8px; border-radius: 4px;
+      font-size: 11px; font-weight: bold; pointer-events: none;
+    }
+
+    .footer { margin: 12px 0 20px 0; color: var(--muted); font-size: 11.5px; }
     kbd { background: #1e293b; border: 1px solid #334155; padding: 2px 5px; border-radius: 3px; }
   </style>
 </head>
@@ -559,13 +606,19 @@ def build_frontend_html(dest_path):
       <div class="btn-group">
         <b>Model Run:</b>
         <button class="btn" onclick="stepRun(-1)">▲ Newer</button>
-        <select id="runSelect" onchange="updateImage()"></select>
+        <select id="runSelect" onchange="updateViewers()"></select>
         <button class="btn" onclick="stepRun(1)">▼ Older</button>
       </div>
 
-      <div class="btn-group">
+      <div class="btn-group" id="periodBox">
         <b>Synoptic Period:</b>
         <div id="periodButtons" class="btn-group"></div>
+      </div>
+
+      <div class="btn-group">
+        <b>Layout:</b>
+        <button class="btn active" id="btnSingle" onclick="setLayout('single')">Single</button>
+        <button class="btn" id="btnSplit" onclick="setLayout('split')">Split Screen</button>
       </div>
     </div>
 
@@ -577,27 +630,44 @@ def build_frontend_html(dest_path):
         <button class="btn" data-prod="prob_2p0x" onclick="setProduct(this)">2.0x FFG</button>
         <button class="btn" data-prod="refs_precomputed" onclick="setProduct(this)">Official REFS</button>
         <span style="border-left: 1px solid var(--border); margin: 0 4px; height: 18px;"></span>
-        <button class="btn" data-prod="coverage_min" onclick="setProduct(this)">Coverage (Min)</button>
-        <button class="btn" data-prod="coverage_avg" onclick="setProduct(this)">Coverage (Mean)</button>
-        <button class="btn" data-prod="coverage_max" onclick="setProduct(this)">Coverage (Max)</button>
+        <button class="btn" data-prod="coverage_min" onclick="setProduct(this)">Cov (Min)</button>
+        <button class="btn" data-prod="coverage_avg" onclick="setProduct(this)">Cov (Mean)</button>
+        <button class="btn" data-prod="coverage_max" onclick="setProduct(this)">Cov (Max)</button>
+        <span style="border-left: 1px solid var(--border); margin: 0 4px; height: 18px;"></span>
+        <button class="btn btn-ffg" data-prod="ffg_1h" onclick="setProduct(this)">1-hr FFG</button>
+        <button class="btn btn-ffg" data-prod="ffg_3h" onclick="setProduct(this)">3-hr FFG</button>
+        <button class="btn btn-ffg" data-prod="ffg_6h" onclick="setProduct(this)">6-hr FFG</button>
       </div>
     </div>
   </div>
 
-  <div class="viewer-card">
-    <img id="displayImg" src="" alt="REFS Guidance Graphic">
+  <div class="viewer-container" id="viewerContainer">
+    <div class="viewer-card" id="cardPrimary">
+      <div class="card-label" id="labelPrimary">Primary</div>
+      <img id="imgPrimary" src="" alt="Primary REFS Graphic">
+    </div>
+    <div class="viewer-card" id="cardSecondary" style="display:none;">
+      <div class="card-label" id="labelSecondary">Comparison (Previous Run)</div>
+      <img id="imgSecondary" src="" alt="Secondary Graphic">
+    </div>
   </div>
 
   <div class="footer">
-    Shortcuts: <kbd>←</kbd> / <kbd>→</kbd> Change Product | <kbd>↑</kbd> / <kbd>↓</kbd> Trend Model Cycles (dprog/dt) | <kbd>1</kbd>–<kbd>7</kbd> Direct Select.
+    Shortcuts: <kbd>←</kbd> / <kbd>→</kbd> Change Product | <kbd>↑</kbd> / <kbd>↓</kbd> Trend Cycles (dprog/dt) | <kbd>1</kbd>–<kbd>0</kbd> Quick Jump | <kbd>S</kbd> Toggle Split.
   </div>
 
   <script>
     let manifest = { runs: [], periods: [] };
     let currentProd = 'prob_1p0x';
     let currentPeriod = 'p1';
+    let layoutMode = 'single';
+    const preloadedImages = new Map();
 
-    const PRODUCTS = ['prob_1p0x', 'prob_1p5x', 'prob_2p0x', 'refs_precomputed', 'coverage_min', 'coverage_avg', 'coverage_max'];
+    const PRODUCTS = [
+      'prob_1p0x', 'prob_1p5x', 'prob_2p0x', 'refs_precomputed',
+      'coverage_min', 'coverage_avg', 'coverage_max',
+      'ffg_1h', 'ffg_3h', 'ffg_6h'
+    ];
 
     async function init() {
       try {
@@ -616,30 +686,93 @@ def build_frontend_html(dest_path):
         ).join('');
         
         if (manifest.periods.length > 0) currentPeriod = manifest.periods[0].id;
-        updateImage();
+        
+        preloadRunImages(manifest.latest);
+        updateViewers();
       } catch (e) {
         console.error("Manifest load failed.", e);
       }
+    }
+
+    function getImageUrl(runId, periodId, prod) {
+      if (prod.startsWith('ffg_')) {
+        return `runs/${runId}/${prod}.png`;
+      }
+      return `runs/${runId}/${periodId}_${prod}.png`;
+    }
+
+    function preloadRunImages(runId) {
+      PRODUCTS.forEach(prod => {
+        if (prod.startsWith('ffg_')) {
+          const u = getImageUrl(runId, 'p1', prod);
+          if (!preloadedImages.has(u)) {
+            const im = new Image();
+            im.src = u;
+            preloadedImages.set(u, im);
+          }
+        } else {
+          manifest.periods.forEach(p => {
+            const u = getImageUrl(runId, p.id, prod);
+            if (!preloadedImages.has(u)) {
+              const im = new Image();
+              im.src = u;
+              preloadedImages.set(u, im);
+            }
+          });
+        }
+      });
     }
 
     function setProduct(btn) {
       document.querySelectorAll('[data-prod]').forEach(b => b.classList.remove('active'));
       btn.classList.add('active');
       currentProd = btn.getAttribute('data-prod');
-      updateImage();
+      
+      const pBox = document.getElementById('periodBox');
+      if (currentProd.startsWith('ffg_')) {
+        pBox.style.opacity = '0.4';
+        pBox.style.pointerEvents = 'none';
+      } else {
+        pBox.style.opacity = '1.0';
+        pBox.style.pointerEvents = 'auto';
+      }
+      updateViewers();
     }
 
     function setPeriod(btn) {
       document.querySelectorAll('[data-period]').forEach(b => b.classList.remove('active'));
       btn.classList.add('active');
       currentPeriod = btn.getAttribute('data-period');
-      updateImage();
+      updateViewers();
     }
 
-    function updateImage() {
-      const runId = document.getElementById('runSelect').value;
-      const img = document.getElementById('displayImg');
-      img.src = `runs/${runId}/${currentPeriod}_${currentProd}.png`;
+    function setLayout(mode) {
+      layoutMode = mode;
+      document.getElementById('btnSingle').classList.toggle('active', mode === 'single');
+      document.getElementById('btnSplit').classList.toggle('active', mode === 'split');
+      document.getElementById('cardSecondary').style.display = mode === 'split' ? 'block' : 'none';
+      updateViewers();
+    }
+
+    function updateViewers() {
+      const runSel = document.getElementById('runSelect');
+      const curRun = runSel.value;
+      const primaryUrl = getImageUrl(curRun, currentPeriod, currentProd);
+      document.getElementById('imgPrimary').src = primaryUrl;
+      document.getElementById('labelPrimary').textContent = `${runSel.options[runSel.selectedIndex].text}`;
+
+      if (layoutMode === 'split') {
+        const nextIdx = runSel.selectedIndex + 1;
+        if (nextIdx < runSel.options.length) {
+          const prevRun = runSel.options[nextIdx].value;
+          preloadRunImages(prevRun);
+          document.getElementById('imgSecondary').src = getImageUrl(prevRun, currentPeriod, currentProd);
+          document.getElementById('labelSecondary').textContent = `Prior Run: ${runSel.options[nextIdx].text}`;
+        } else {
+          document.getElementById('imgSecondary').src = primaryUrl;
+          document.getElementById('labelSecondary').textContent = `No earlier cycle in archive`;
+        }
+      }
     }
 
     function stepRun(delta) {
@@ -647,7 +780,8 @@ def build_frontend_html(dest_path):
       let idx = sel.selectedIndex + delta;
       if (idx >= 0 && idx < sel.options.length) {
         sel.selectedIndex = idx;
-        updateImage();
+        preloadRunImages(sel.value);
+        updateViewers();
       }
     }
 
@@ -664,9 +798,14 @@ def build_frontend_html(dest_path):
       if (e.key === 'ArrowDown') { e.preventDefault(); stepRun(1); }
       if (e.key === 'ArrowLeft') { e.preventDefault(); stepProduct(-1); }
       if (e.key === 'ArrowRight') { e.preventDefault(); stepProduct(1); }
-      if (e.key >= '1' && e.key <= '7') {
+      if (e.key === 's' || e.key === 'S') { setLayout(layoutMode === 'single' ? 'split' : 'single'); }
+      if (e.key >= '1' && e.key <= '9') {
         const target = PRODUCTS[parseInt(e.key) - 1];
         const btn = document.querySelector(`[data-prod="${target}"]`);
+        if (btn) setProduct(btn);
+      }
+      if (e.key === '0') {
+        const btn = document.querySelector(`[data-prod="${PRODUCTS[9]}"]`);
         if (btn) setProduct(btn);
       }
     });
