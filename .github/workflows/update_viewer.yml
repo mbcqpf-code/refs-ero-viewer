@@ -2,8 +2,8 @@ name: Update REFS ERO Viewer
 
 on:
   schedule:
-    # Runs at 03:30, 09:30, 15:30, 21:30 UTC for 00z, 06z, 12z, 18z runs
-    - cron: '30 3,9,15,21 * * *'
+    # Runs every 2 hours at minute 20 (00:20, 02:20, 04:20, ... 22:20 UTC)
+    - cron: '20 */2 * * *'
   workflow_dispatch:
 
 permissions:
@@ -40,15 +40,15 @@ jobs:
       - name: Install Python Packages
         run: |
           pip install --upgrade pip
-          pip install numpy scipy xarray cfgrib cartopy matplotlib requests
+          pip install -r requirements.txt
 
       - name: Restore Previous Output Cache
         uses: actions/cache@v4
         with:
-          path: output/runs
-          key: refs-viewer-runs-${{ github.run_id }}
+          path: output
+          key: refs-viewer-output-${{ github.run_id }}
           restore-keys: |
-            refs-viewer-runs-
+            refs-viewer-output-
 
       - name: Run REFS ERO Pipeline
         run: |
