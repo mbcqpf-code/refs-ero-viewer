@@ -69,32 +69,32 @@ def build_synoptic_periods(init_dt):
     periods = []
 
     if cycle == 12:
-        periods.append({"id": "p1", "name": "Day 1 ERO", "f_start": 1, "f_end": 24, "hours": 24,
+        periods.append({"id": "p1", "name": "Day 1", "f_start": 1, "f_end": 24, "hours": 24,
                         "valid_start": init_dt, "valid_end": init_dt + timedelta(hours=24)})
-        periods.append({"id": "p2", "name": "Day 2 ERO", "f_start": 25, "f_end": 48, "hours": 24,
+        periods.append({"id": "p2", "name": "Day 2", "f_start": 25, "f_end": 48, "hours": 24,
                         "valid_start": init_dt + timedelta(hours=24), "valid_end": init_dt + timedelta(hours=48)})
-        periods.append({"id": "p3", "name": "Day 3 ERO", "f_start": 49, "f_end": 72, "hours": 24,
+        periods.append({"id": "p3", "name": "Day 3", "f_start": 49, "f_end": 72, "hours": 24,
                         "valid_start": init_dt + timedelta(hours=48), "valid_end": init_dt + timedelta(hours=72)})
     elif cycle == 18:
         periods.append({"id": "p1", "name": "Day 1 (Partial 18h)", "f_start": 1, "f_end": 18, "hours": 18,
                         "valid_start": init_dt, "valid_end": init_dt + timedelta(hours=18)})
-        periods.append({"id": "p2", "name": "Day 2 ERO", "f_start": 19, "f_end": 42, "hours": 24,
+        periods.append({"id": "p2", "name": "Day 2", "f_start": 19, "f_end": 42, "hours": 24,
                         "valid_start": init_dt + timedelta(hours=18), "valid_end": init_dt + timedelta(hours=42)})
-        periods.append({"id": "p3", "name": "Day 3 ERO", "f_start": 43, "f_end": 66, "hours": 24,
+        periods.append({"id": "p3", "name": "Day 3", "f_start": 43, "f_end": 66, "hours": 24,
                         "valid_start": init_dt + timedelta(hours=42), "valid_end": init_dt + timedelta(hours=66)})
     elif cycle == 0:
         periods.append({"id": "p1", "name": "Day 1 (Remainder 12h)", "f_start": 1, "f_end": 12, "hours": 12,
                         "valid_start": init_dt, "valid_end": init_dt + timedelta(hours=12)})
-        periods.append({"id": "p2", "name": "Next Day ERO", "f_start": 13, "f_end": 36, "hours": 24,
+        periods.append({"id": "p2", "name": "Day 2", "f_start": 13, "f_end": 36, "hours": 24,
                         "valid_start": init_dt + timedelta(hours=12), "valid_end": init_dt + timedelta(hours=36)})
-        periods.append({"id": "p3", "name": "Day 2 ERO", "f_start": 37, "f_end": 60, "hours": 24,
+        periods.append({"id": "p3", "name": "Day 3", "f_start": 37, "f_end": 60, "hours": 24,
                         "valid_start": init_dt + timedelta(hours=36), "valid_end": init_dt + timedelta(hours=60)})
     elif cycle == 6:
         periods.append({"id": "p1", "name": "Day 1 (Remainder 6h)", "f_start": 1, "f_end": 6, "hours": 6,
                         "valid_start": init_dt, "valid_end": init_dt + timedelta(hours=6)})
-        periods.append({"id": "p2", "name": "Next Day ERO", "f_start": 7, "f_end": 30, "hours": 24,
+        periods.append({"id": "p2", "name": "Day 2", "f_start": 7, "f_end": 30, "hours": 24,
                         "valid_start": init_dt + timedelta(hours=6), "valid_end": init_dt + timedelta(hours=30)})
-        periods.append({"id": "p3", "name": "Day 2 ERO", "f_start": 31, "f_end": 54, "hours": 24,
+        periods.append({"id": "p3", "name": "Day 3", "f_start": 31, "f_end": 54, "hours": 24,
                         "valid_start": init_dt + timedelta(hours=30), "valid_end": init_dt + timedelta(hours=54)})
 
     return periods
@@ -401,6 +401,8 @@ def build_frontend_html(dest_path):
     .btn-ffg { background: #1e3a29; border-color: #2e593e; color: #a7f3d0; }
     .btn-ffg:hover { background: #264e37; color: #fff; }
     .btn-ffg.active { background: #059669; border-color: #10b981; color: #fff; }
+    .btn-help { background: #334155; color: #93c5fd; border-color: #475569; }
+    .btn-help:hover { background: #475569; color: #fff; }
     
     select {
       background: #0f172a; color: #fff; border: 1px solid var(--border);
@@ -421,6 +423,35 @@ def build_frontend_html(dest_path):
       flex-wrap: wrap; gap: 6px;
     }
     .viewer-card img { width: 100%; height: auto; display: block; }
+
+    /* Modal Help Styling */
+    .modal-overlay {
+      display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+      background: rgba(0, 0, 0, 0.75); z-index: 9999; justify-content: center; align-items: center;
+    }
+    .modal-overlay.open { display: flex; }
+    .modal-content {
+      background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+      width: 90%; max-width: 850px; max-height: 85vh; overflow-y: auto; padding: 20px 24px;
+      box-shadow: 0 20px 40px rgba(0,0,0,0.8); color: var(--text);
+    }
+    .modal-header {
+      display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--border);
+      padding-bottom: 10px; margin-bottom: 14px;
+    }
+    .modal-header h3 { margin: 0; font-size: 1.2rem; color: #60a5fa; }
+    .modal-close {
+      background: transparent; border: none; font-size: 24px; color: var(--muted); cursor: pointer;
+    }
+    .modal-close:hover { color: #fff; }
+    .help-grid { display: flex; flex-direction: column; gap: 14px; }
+    .help-section {
+      background: #0b1120; border: 1px solid var(--border); border-radius: 6px; padding: 12px 14px;
+    }
+    .help-section h4 { margin: 0 0 6px 0; font-size: 0.95rem; color: #38bdf8; display: flex; align-items: center; gap: 6px; }
+    .help-item { margin-bottom: 8px; font-size: 0.85rem; line-height: 1.45; }
+    .help-item:last-child { margin-bottom: 0; }
+    .help-item b { color: #e2e8f0; }
 
     .footer { margin: 12px 0 20px 0; color: var(--muted); font-size: 11.5px; }
     kbd { background: #1e293b; border: 1px solid #334155; padding: 2px 5px; border-radius: 3px; }
@@ -450,6 +481,7 @@ def build_frontend_html(dest_path):
         <b>Layout:</b>
         <button class="btn active" id="btnSingle" onclick="setLayout('single')">Single</button>
         <button class="btn" id="btnSplit" onclick="setLayout('split')">Split Screen</button>
+        <button class="btn btn-help" onclick="toggleHelpModal(true)" title="View explanation of products (Shortcut: ? or H)">ℹ️ Product Guide</button>
       </div>
     </div>
 
@@ -500,8 +532,59 @@ def build_frontend_html(dest_path):
     </div>
   </div>
 
+  <!-- HELP / PRODUCT GUIDE MODAL -->
+  <div id="helpModal" class="modal-overlay" onclick="onModalOverlayClick(event)">
+    <div class="modal-content" onclick="event.stopPropagation()">
+      <div class="modal-header">
+        <h3>REFS Excessive Rainfall Viewer — Product Guide</h3>
+        <button class="modal-close" onclick="toggleHelpModal(false)">&times;</button>
+      </div>
+      <div class="help-grid">
+        <div class="help-section">
+          <h4>🌧️ Custom FFG Exceedance Probabilities (NMEP 40-km Swath)</h4>
+          <div class="help-item">
+            <b>1.0x FFG:</b> Evaluates 24-hr cumulative threat of flash flooding. Shows the 40-km neighborhood probability that any member's 1-hr, 3-hr, or 6-hr QPF will exceed 100% of antecedent Flash Flood Guidance at least once during the synoptic period.
+          </div>
+          <div class="help-item">
+            <b>1.5x FFG:</b> Probability that rainfall reaches 150% of FFG. Signals moderate-to-severe flash flood risk where runoff will easily overwhelm local drainage and small stream basins.
+          </div>
+          <div class="help-item">
+            <b>2.0x FFG:</b> Probability of rainfall reaching double (200%) the local FFG. Highlighting potential for significant, life-threatening flash flooding, rapid road washouts, and major hydrologic impacts.
+          </div>
+        </div>
+
+        <div class="help-section">
+          <h4>🏛️ Official NCEP Product (Instantaneous Comparison)</h4>
+          <div class="help-item">
+            <b>Official REFS:</b> Plots the pre-computed <code>PPFFG</code> field generated directly by NCEP inside the REFS <code>ffri</code> suite. Represents the <i>peak instantaneous</i> probability observed at any individual hour across members, contrasting with the cumulative 24-hr multi-member swath method.
+          </div>
+        </div>
+
+        <div class="help-section">
+          <h4>📏 40-km Neighborhood Areal Coverage Fraction</h4>
+          <div class="help-item">
+            <b>Coverage (Min):</b> Minimum areal percentage of the 40-km circular neighborhood that exceeds 1.0x FFG among all 14 members. Highlights the highest-confidence "core" flood footprint agreed upon across the entire ensemble.
+          </div>
+          <div class="help-item">
+            <b>Coverage (Mean):</b> Ensemble average neighborhood areal coverage fraction. Represents the expected spatial footprint and density of flash flood conditions.
+          </div>
+          <div class="help-item">
+            <b>Coverage (Max):</b> Maximum neighborhood coverage percentage predicted by any individual member. Identifies the reasonable worst-case convective blowout or training storm scenario.
+          </div>
+        </div>
+
+        <div class="help-section">
+          <h4>🗺️ River Forecast Center (RFC) Antecedent FFG</h4>
+          <div class="help-item">
+            <b>1-hr, 3-hr, 6-hr FFG:</b> The operational 5-km RFC Flash Flood Guidance mosaics (in inches) ingested at model initialization. Shows the precise rainfall required over 1, 3, or 6 hours to trigger flash flooding given current soil saturation and stream baseflow.
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <div class="footer">
-    Shortcuts: <kbd>←</kbd> / <kbd>→</kbd> Change Product | <kbd>↑</kbd> / <kbd>↓</kbd> Trend Cycles (dprog/dt) | <kbd>1</kbd>–<kbd>0</kbd> Direct Product Jump | <kbd>S</kbd> Toggle Split.
+    Shortcuts: <kbd>←</kbd> / <kbd>→</kbd> Change Product | <kbd>↑</kbd> / <kbd>↓</kbd> Trend Cycles (dprog/dt) | <kbd>1</kbd>–<kbd>0</kbd> Direct Product Jump | <kbd>S</kbd> Toggle Split | <kbd>?</kbd> Help.
   </div>
 
   <script>
@@ -543,7 +626,6 @@ def build_frontend_html(dest_path):
         
         if (manifest.periods.length > 0) currentPeriod = manifest.periods[0].id;
         
-        // Populate Split Screen Dropdowns
         ['pane1', 'pane2'].forEach(p => {
           document.getElementById(`${p}Run`).innerHTML = optionsHtml;
           document.getElementById(`${p}Period`).innerHTML = manifest.periods.map(pr => 
@@ -554,17 +636,16 @@ def build_frontend_html(dest_path):
           ).join('');
         });
 
-        // Smart defaults for Split Screen
         document.getElementById('pane1Run').value = manifest.latest;
         document.getElementById('pane1Period').value = currentPeriod;
         document.getElementById('pane1Prod').value = currentProd;
 
         if (manifest.runs.length > 1) {
-          document.getElementById('pane2Run').value = manifest.runs[1].id; // previous run
+          document.getElementById('pane2Run').value = manifest.runs[1].id;
           document.getElementById('pane2Prod').value = currentProd;
         } else {
           document.getElementById('pane2Run').value = manifest.latest;
-          document.getElementById('pane2Prod').value = 'prob_2p0x'; // severity contrast
+          document.getElementById('pane2Prod').value = 'prob_2p0x';
         }
         document.getElementById('pane2Period').value = currentPeriod;
 
@@ -688,12 +769,28 @@ def build_frontend_html(dest_path):
       if (nextBtn) setProduct(nextBtn);
     }
 
+    function toggleHelpModal(show) {
+      const modal = document.getElementById('helpModal');
+      modal.classList.toggle('open', show);
+    }
+
+    function onModalOverlayClick(e) {
+      if (e.target.classList.contains('modal-overlay')) {
+        toggleHelpModal(false);
+      }
+    }
+
     document.addEventListener('keydown', (e) => {
       if (e.key === 'ArrowUp') { e.preventDefault(); stepRun(-1); }
       if (e.key === 'ArrowDown') { e.preventDefault(); stepRun(1); }
       if (e.key === 'ArrowLeft') { e.preventDefault(); stepProduct(-1); }
       if (e.key === 'ArrowRight') { e.preventDefault(); stepProduct(1); }
       if (e.key === 's' || e.key === 'S') { setLayout(layoutMode === 'single' ? 'split' : 'single'); }
+      if (e.key === '?' || e.key === 'h' || e.key === 'H') {
+        const modal = document.getElementById('helpModal');
+        toggleHelpModal(!modal.classList.contains('open'));
+      }
+      if (e.key === 'Escape') { toggleHelpModal(false); }
       if (e.key >= '1' && e.key <= '9') {
         const target = PRODUCTS[parseInt(e.key) - 1].id;
         const btn = document.querySelector(`[data-prod="${target}"]`);
@@ -722,7 +819,6 @@ def run_production():
     current_run_dir = RUNS_DIR / cycle_id
     periods = build_synoptic_periods(init_dt)
 
-    # CHECK IF ALREADY COMPLETED (FAST SKIP LOGIC)
     flag_file = current_run_dir / "complete.json"
     if current_run_dir.exists() and flag_file.exists():
         print(f"\n==========================================")
@@ -741,7 +837,6 @@ def run_production():
 
     full_catalog = get_member_catalog(init_dt)
 
-    # 1. Fetch grid geometry and render FFG baseline maps
     test_task = get_member_file_info(full_catalog[0], 1)
     download_apcp_slice(test_task[0], test_task[1], test_task[2], test_task[3])
     ds_init = xr.open_dataset(test_task[2], engine="cfgrib")
@@ -764,7 +859,6 @@ def run_production():
         )
         print(f" -> Generated ffg_{dur_key}.png")
 
-    # 2. Process synoptic periods
     for p in periods:
         p_id = p["id"]
         req_lead_max = p["f_end"]
@@ -872,11 +966,9 @@ def run_production():
         del member_coverages, cov_stack
         gc.collect()
 
-    # 3. Mark run complete
     with open(flag_file, "w") as f:
         json.dump({"cycle": cycle_id, "completed_at": datetime.now(timezone.utc).isoformat()}, f)
 
-    # 4. Update manifest and HTML frontend
     update_manifest_and_html(periods)
     print(f"\nExecution Complete! Output archived in {current_run_dir}")
 
