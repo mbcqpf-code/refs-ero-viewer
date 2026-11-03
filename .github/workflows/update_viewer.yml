@@ -1,0 +1,67 @@
+name: Update REFS ERO Viewer
+
+on:
+  schedule:
+    # Runs at 03:30, 09:30, 15:30, 21:30 UTC for 00z, 06z, 12z, 18z runs
+    - cron: '30 3,9,15,21 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+concurrency:
+  group: 'pages'
+  cancel-in-progress: false
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install System Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgeos-dev libproj-dev libeccodes-dev
+
+      - name: Install Python Packages
+        run: |
+          pip install --upgrade pip
+          pip install numpy scipy xarray cfgrib cartopy matplotlib requests
+
+      - name: Restore Previous Output Cache
+        uses: actions/cache@v4
+        with:
+          path: output/runs
+          key: refs-viewer-runs-${{ github.run_id }}
+          restore-keys: |
+            refs-viewer-runs-
+
+      - name: Run REFS ERO Pipeline
+        run: |
+          python generate_refs_ero_viewer.py
+
+      - name: Setup GitHub Pages
+        uses: actions/configure-pages@v4
+
+      - name: Upload Artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: 'output'
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
