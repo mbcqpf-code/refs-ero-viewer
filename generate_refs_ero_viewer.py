@@ -45,24 +45,39 @@ FOOTPRINT_SUM = float(np.sum(CIRCULAR_FOOTPRINT))
 # ==========================================
 # 2. DYNAMIC CYCLE & PERIOD RESOLVER
 # ==========================================
-def get_latest_cycle_dt():
+def get_pending_and_available_cycles(max_lookback_hours=36):
+    """
+    Scans the last 36 hours for cycles available on AWS S3 that have not
+    yet completed locally. Returns them sorted chronologically (oldest first).
+    """
     now = datetime.now(timezone.utc)
     anchor = now.replace(minute=0, second=0, microsecond=0)
-    for h_back in range(0, 36, 6):
+    pending = []
+
+    for h_back in range(0, max_lookback_hours + 1, 6):
         cand = anchor - timedelta(hours=h_back)
         cycle_hour = (cand.hour // 6) * 6
         cand = cand.replace(hour=cycle_hour)
         date_str = cand.strftime("%Y%m%d")
-        
-        test_url = f"https://noaa-rrfs-ops-pds.s3.amazonaws.com/rrfs.{date_str}/{cycle_hour:02d}/rrfs.t{cycle_hour:02d}z.2dfld.3km.f001.conus.grib2.idx"
+        cycle_id = cand.strftime("%Y%m%d_%H")
+
+        # Test availability of RRFS control f001 on AWS
+        test_url = (
+            f"https://noaa-rrfs-ops-pds.s3.amazonaws.com/rrfs.{date_str}/{cycle_hour:02d}/"
+            f"rrfs.t{cycle_hour:02d}z.2dfld.3km.f001.conus.grib2.idx"
+        )
         try:
             r = requests.head(test_url, timeout=4)
             if r.status_code == 200:
-                print(f"Locked in latest available cycle: {date_str} {cycle_hour:02d}z")
-                return cand
+                flag_file = RUNS_DIR / cycle_id / "complete.json"
+                if not (flag_file.exists() and flag_file.stat().st_size > 0):
+                    pending.append(cand)
         except Exception:
             continue
-    raise RuntimeError("No recent REFS cycle found on AWS Open Data.")
+
+    # Sort oldest first so archives build chronologically
+    pending.sort()
+    return pending
 
 def build_synoptic_periods(init_dt):
     cycle = init_dt.hour
@@ -342,17 +357,38 @@ def render_plot(data, lats, lons, title, subtitle, cbar_label, filename, out_dir
 # ==========================================
 # 7. MANIFEST & FRONTEND BUILDER
 # ==========================================
-def update_manifest_and_html(periods):
+def update_manifest_and_html():
     all_runs = sorted([d for d in os.listdir(RUNS_DIR) if (RUNS_DIR / d).is_dir()], reverse=True)
     if len(all_runs) > 10:
         for old in all_runs[10:]:
             shutil.rmtree(RUNS_DIR / old, ignore_errors=True)
     all_runs = all_runs[:10]
 
+    runs_meta = []
+    for r in all_runs:
+        try:
+            r_dt = datetime.strptime(r, "%Y%m%d_%H")
+            r_periods = build_synoptic_periods(r_dt)
+            runs_meta.append({
+                "id": r,
+                "label": r_dt.strftime("%Y-%m-%d %Hz"),
+                "init": r_dt.strftime("%Y-%m-%dT%H:00:00Z"),
+                "periods": [
+                    {
+                        "id": p["id"],
+                        "name": p["name"],
+                        "valid_start": p["valid_start"].strftime("%Y-%m-%dT%H:00:00Z"),
+                        "valid_end": p["valid_end"].strftime("%Y-%m-%dT%H:00:00Z")
+                    }
+                    for p in r_periods
+                ]
+            })
+        except Exception:
+            continue
+
     manifest = {
         "latest": all_runs[0] if all_runs else "",
-        "runs": [{"id": r, "label": datetime.strptime(r, "%Y%m%d_%H").strftime("%Y-%m-%d %Hz")} for r in all_runs],
-        "periods": [{"id": p["id"], "name": p["name"]} for p in periods]
+        "runs": runs_meta
     }
     with open(OUTPUT_DIR / "manifest.json", "w") as f:
         json.dump(manifest, f, indent=2)
@@ -510,7 +546,7 @@ def build_frontend_html(dest_path):
       <div class="pane-toolbar" id="pane1Bar">
         <span style="font-weight:bold; color:#60a5fa;">Pane 1 (Left):</span>
         <div style="display:flex; gap:6px; align-items:center;">
-          <select id="pane1Run" onchange="updatePane1()"></select>
+          <select id="pane1Run" onchange="onPane1RunChange()"></select>
           <select id="pane1Period" onchange="updatePane1()"></select>
           <select id="pane1Prod" onchange="updatePane1()"></select>
         </div>
@@ -523,7 +559,7 @@ def build_frontend_html(dest_path):
       <div class="pane-toolbar" id="pane2Bar">
         <span style="font-weight:bold; color:#f59e0b;">Pane 2 (Right):</span>
         <div style="display:flex; gap:6px; align-items:center;">
-          <select id="pane2Run" onchange="updatePane2()"></select>
+          <select id="pane2Run" onchange="onPane2RunChange()"></select>
           <select id="pane2Period" onchange="updatePane2()"></select>
           <select id="pane2Prod" onchange="updatePane2()"></select>
         </div>
@@ -543,40 +579,40 @@ def build_frontend_html(dest_path):
         <div class="help-section">
           <h4>🌧️ Custom FFG Exceedance Probabilities (NMEP 40-km Swath)</h4>
           <div class="help-item">
-            <b>1.0x FFG:</b> Evaluates 24-hr cumulative threat of flash flooding. Shows the 40-km neighborhood probability that any member's 1-hr, 3-hr, or 6-hr QPF will exceed 100% of antecedent Flash Flood Guidance at least once during the synoptic period.
+            <b>1.0x FFG:</b> Evaluates 24-hr cumulative threat of flash flooding. Shows the 40-km neighborhood probability that any member's rolling 1-hr, 3-hr, or 6-hr QPF will exceed 100% of antecedent Flash Flood Guidance at least once during the synoptic period.
           </div>
           <div class="help-item">
-            <b>1.5x FFG:</b> Probability that rainfall reaches 150% of FFG. Signals moderate-to-severe flash flood risk where runoff will easily overwhelm local drainage and small stream basins.
+            <b>1.5x FFG:</b> Probability that rainfall reaches 150% of FFG. Signals moderate-to-severe flash flood risk where runoff easily overwhelms drainage basins.
           </div>
           <div class="help-item">
-            <b>2.0x FFG:</b> Probability of rainfall reaching double (200%) the local FFG. Highlighting potential for significant, life-threatening flash flooding, rapid road washouts, and major hydrologic impacts.
+            <b>2.0x FFG:</b> Probability of rainfall reaching double (200%) local FFG. Highlights high risk for significant, life-threatening flash flooding and major infrastructure impacts.
           </div>
         </div>
 
         <div class="help-section">
           <h4>🏛️ Official NCEP Product (Instantaneous Comparison)</h4>
           <div class="help-item">
-            <b>Official REFS:</b> Plots the pre-computed <code>PPFFG</code> field generated directly by NCEP inside the REFS <code>ffri</code> suite. Represents the <i>peak instantaneous</i> probability observed at any individual hour across members, contrasting with the cumulative 24-hr multi-member swath method.
+            <b>Official REFS:</b> Plots the pre-computed <code>PPFFG</code> field generated by NCEP in the REFS <code>ffri</code> suite. Represents the <i>peak instantaneous</i> probability observed at any single discrete synoptic hour.
           </div>
         </div>
 
         <div class="help-section">
           <h4>📏 40-km Neighborhood Areal Coverage Fraction</h4>
           <div class="help-item">
-            <b>Coverage (Min):</b> Minimum areal percentage of the 40-km circular neighborhood that exceeds 1.0x FFG among all 14 members. Highlights the highest-confidence "core" flood footprint agreed upon across the entire ensemble.
+            <b>Coverage (Min):</b> Minimum percentage of the 40-km neighborhood exceeding 1.0x FFG across all 14 members. Identifies the high-confidence core footprint agreed upon by the entire ensemble.
           </div>
           <div class="help-item">
             <b>Coverage (Mean):</b> Ensemble average neighborhood areal coverage fraction. Represents the expected spatial footprint and density of flash flood conditions.
           </div>
           <div class="help-item">
-            <b>Coverage (Max):</b> Maximum neighborhood coverage percentage predicted by any individual member. Identifies the reasonable worst-case convective blowout or training storm scenario.
+            <b>Coverage (Max):</b> Maximum neighborhood coverage percentage predicted by any individual member. Highlights the reasonable worst-case training or convective blowout scenario.
           </div>
         </div>
 
         <div class="help-section">
           <h4>🗺️ River Forecast Center (RFC) Antecedent FFG</h4>
           <div class="help-item">
-            <b>1-hr, 3-hr, 6-hr FFG:</b> The operational 5-km RFC Flash Flood Guidance mosaics (in inches) ingested at model initialization. Shows the precise rainfall required over 1, 3, or 6 hours to trigger flash flooding given current soil saturation and stream baseflow.
+            <b>1-hr, 3-hr, 6-hr FFG:</b> Operational 5-km RFC Flash Flood Guidance mosaics (in inches) ingested at model initialization.
           </div>
         </div>
       </div>
@@ -584,11 +620,12 @@ def build_frontend_html(dest_path):
   </div>
 
   <div class="footer">
-    Shortcuts: <kbd>←</kbd> / <kbd>→</kbd> Change Product | <kbd>↑</kbd> / <kbd>↓</kbd> Trend Cycles (dprog/dt) | <kbd>1</kbd>–<kbd>0</kbd> Direct Product Jump | <kbd>S</kbd> Toggle Split | <kbd>?</kbd> Help.
+    Shortcuts: <kbd>←</kbd> / <kbd>→</kbd> Change Product | <kbd>↑</kbd> / <kbd>↓</kbd> Trend Cycles (dprog/dt with Valid Time Lock) | <kbd>1</kbd>–<kbd>0</kbd> Jump | <kbd>S</kbd> Split | <kbd>?</kbd> Help.
   </div>
 
   <script>
-    let manifest = { runs: [], periods: [] };
+    let manifest = { runs: [] };
+    let currentRunId = '';
     let currentProd = 'prob_1p0x';
     let currentPeriod = 'p1';
     let layoutMode = 'single';
@@ -611,49 +648,100 @@ def build_frontend_html(dest_path):
       try {
         const res = await fetch('manifest.json?t=' + Date.now());
         manifest = await res.json();
-        
+        if (!manifest.runs || manifest.runs.length === 0) return;
+
+        currentRunId = manifest.latest || manifest.runs[0].id;
+        const activeRun = manifest.runs.find(r => r.id === currentRunId) || manifest.runs[0];
+        if (activeRun.periods.length > 0) currentPeriod = activeRun.periods[0].id;
+
         const runSel = document.getElementById('runSelect');
         const optionsHtml = manifest.runs.map((r, i) => 
           `<option value="${r.id}">${r.label}${i === 0 ? ' (Latest)' : ''}</option>`
         ).join('');
         runSel.innerHTML = optionsHtml;
-        runSel.value = manifest.latest;
+        runSel.value = currentRunId;
 
-        const pBox = document.getElementById('periodButtons');
-        pBox.innerHTML = manifest.periods.map((p, i) => 
-          `<button class="btn ${i === 0 ? 'active' : ''}" data-period="${p.id}" onclick="setPeriod(this)">${p.name}</button>`
-        ).join('');
-        
-        if (manifest.periods.length > 0) currentPeriod = manifest.periods[0].id;
-        
         ['pane1', 'pane2'].forEach(p => {
           document.getElementById(`${p}Run`).innerHTML = optionsHtml;
-          document.getElementById(`${p}Period`).innerHTML = manifest.periods.map(pr => 
-            `<option value="${pr.id}">${pr.name}</option>`
-          ).join('');
           document.getElementById(`${p}Prod`).innerHTML = PRODUCTS.map(pr => 
             `<option value="${pr.id}">${pr.name}</option>`
           ).join('');
         });
 
-        document.getElementById('pane1Run').value = manifest.latest;
-        document.getElementById('pane1Period').value = currentPeriod;
-        document.getElementById('pane1Prod').value = currentProd;
-
-        if (manifest.runs.length > 1) {
-          document.getElementById('pane2Run').value = manifest.runs[1].id;
-          document.getElementById('pane2Prod').value = currentProd;
-        } else {
-          document.getElementById('pane2Run').value = manifest.latest;
-          document.getElementById('pane2Prod').value = 'prob_2p0x';
-        }
-        document.getElementById('pane2Period').value = currentPeriod;
-
-        preloadRunImages(manifest.latest);
+        renderPeriodButtons(activeRun);
+        initSplitScreen(activeRun);
+        preloadRunImages(currentRunId);
         updateSingleViewer();
       } catch (e) {
         console.error("Manifest load failed.", e);
       }
+    }
+
+    function renderPeriodButtons(runObj) {
+      const pBox = document.getElementById('periodButtons');
+      pBox.innerHTML = runObj.periods.map(p => 
+        `<button class="btn ${p.id === currentPeriod ? 'active' : ''}" data-period="${p.id}" onclick="setPeriod('${p.id}')">${p.name}</button>`
+      ).join('');
+    }
+
+    function initSplitScreen(activeRun) {
+      document.getElementById('pane1Run').value = currentRunId;
+      populatePeriodDropdown('pane1', activeRun);
+      document.getElementById('pane1Period').value = currentPeriod;
+      document.getElementById('pane1Prod').value = currentProd;
+
+      const secondaryRun = manifest.runs.length > 1 ? manifest.runs[1] : activeRun;
+      document.getElementById('pane2Run').value = secondaryRun.id;
+      populatePeriodDropdown('pane2', secondaryRun);
+
+      const matchP = findMatchingPeriod(activeRun, currentPeriod, secondaryRun);
+      document.getElementById('pane2Period').value = matchP ? matchP.id : secondaryRun.periods[0].id;
+      document.getElementById('pane2Prod').value = manifest.runs.length > 1 ? currentProd : 'prob_2p0x';
+    }
+
+    function populatePeriodDropdown(panePrefix, runObj) {
+      document.getElementById(`${panePrefix}Period`).innerHTML = runObj.periods.map(pr => 
+        `<option value="${pr.id}">${pr.name}</option>`
+      ).join('');
+    }
+
+    function findMatchingPeriod(fromRunObj, fromPeriodId, toRunObj) {
+      if (!fromRunObj || !toRunObj || !fromRunObj.periods || !toRunObj.periods) return null;
+      const srcPeriod = fromRunObj.periods.find(p => p.id === fromPeriodId);
+      if (!srcPeriod) return toRunObj.periods[0] || null;
+
+      const targetEnd = srcPeriod.valid_end;
+      // 1. Exact valid_end match across cycles
+      let match = toRunObj.periods.find(p => p.valid_end === targetEnd);
+      if (match) return match;
+
+      // 2. Fallback to closest valid_end
+      let minDiff = Infinity;
+      toRunObj.periods.forEach(p => {
+        let diff = Math.abs(new Date(p.valid_end) - new Date(targetEnd));
+        if (diff < minDiff) {
+          minDiff = diff;
+          match = p;
+        }
+      });
+      return match || toRunObj.periods[0];
+    }
+
+    function changeRun(newRunId) {
+      const oldRunObj = manifest.runs.find(r => r.id === currentRunId);
+      const newRunObj = manifest.runs.find(r => r.id === newRunId);
+      if (!newRunObj) return;
+
+      if (!currentProd.startsWith('ffg_') && oldRunObj) {
+        const match = findMatchingPeriod(oldRunObj, currentPeriod, newRunObj);
+        if (match) currentPeriod = match.id;
+      }
+
+      currentRunId = newRunId;
+      document.getElementById('runSelect').value = newRunId;
+      renderPeriodButtons(newRunObj);
+      preloadRunImages(newRunId);
+      updateSingleViewer();
     }
 
     function getImageUrl(runId, periodId, prod) {
@@ -664,6 +752,9 @@ def build_frontend_html(dest_path):
     }
 
     function preloadRunImages(runId) {
+      const runObj = manifest.runs.find(r => r.id === runId);
+      if (!runObj) return;
+
       PRODUCTS.forEach(p => {
         if (p.id.startsWith('ffg_')) {
           const u = getImageUrl(runId, 'p1', p.id);
@@ -671,7 +762,7 @@ def build_frontend_html(dest_path):
             const im = new Image(); im.src = u; preloadedImages.set(u, im);
           }
         } else {
-          manifest.periods.forEach(pr => {
+          runObj.periods.forEach(pr => {
             const u = getImageUrl(runId, pr.id, p.id);
             if (!preloadedImages.has(u)) {
               const im = new Image(); im.src = u; preloadedImages.set(u, im);
@@ -688,7 +779,7 @@ def build_frontend_html(dest_path):
       
       const pBox = document.getElementById('periodBox');
       if (currentProd.startsWith('ffg_')) {
-        pBox.style.opacity = '0.4';
+        pBox.style.opacity = '0.35';
         pBox.style.pointerEvents = 'none';
       } else {
         pBox.style.opacity = '1.0';
@@ -697,15 +788,32 @@ def build_frontend_html(dest_path):
       updateSingleViewer();
     }
 
-    function setPeriod(btn) {
-      document.querySelectorAll('[data-period]').forEach(b => b.classList.remove('active'));
-      btn.classList.add('active');
-      currentPeriod = btn.getAttribute('data-period');
+    function setPeriod(pId) {
+      currentPeriod = pId;
+      const activeRun = manifest.runs.find(r => r.id === currentRunId);
+      if (activeRun) renderPeriodButtons(activeRun);
       updateSingleViewer();
     }
 
     function onMainRunChange() {
-      updateSingleViewer();
+      changeRun(document.getElementById('runSelect').value);
+    }
+
+    function stepRun(delta) {
+      const idx = manifest.runs.findIndex(r => r.id === currentRunId);
+      const nextIdx = idx + delta;
+      if (nextIdx >= 0 && nextIdx < manifest.runs.length) {
+        changeRun(manifest.runs[nextIdx].id);
+      }
+    }
+
+    function stepProduct(delta) {
+      const prodIds = PRODUCTS.map(p => p.id);
+      let idx = prodIds.indexOf(currentProd) + delta;
+      if (idx < 0) idx = prodIds.length - 1;
+      if (idx >= prodIds.length) idx = 0;
+      const nextBtn = document.querySelector(`[data-prod="${prodIds[idx]}"]`);
+      if (nextBtn) setProduct(nextBtn);
     }
 
     function setLayout(mode) {
@@ -719,7 +827,9 @@ def build_frontend_html(dest_path):
       document.getElementById('pane2Bar').style.display = isSplit ? 'flex' : 'none';
 
       if (isSplit) {
-        document.getElementById('pane1Run').value = document.getElementById('runSelect').value;
+        document.getElementById('pane1Run').value = currentRunId;
+        const activeRun = manifest.runs.find(r => r.id === currentRunId);
+        populatePeriodDropdown('pane1', activeRun);
         document.getElementById('pane1Period').value = currentPeriod;
         document.getElementById('pane1Prod').value = currentProd;
         updatePane1();
@@ -731,8 +841,7 @@ def build_frontend_html(dest_path):
 
     function updateSingleViewer() {
       if (layoutMode === 'split') return;
-      const curRun = document.getElementById('runSelect').value;
-      document.getElementById('imgPrimary').src = getImageUrl(curRun, currentPeriod, currentProd);
+      document.getElementById('imgPrimary').src = getImageUrl(currentRunId, currentPeriod, currentProd);
     }
 
     function updatePane1() {
@@ -750,28 +859,22 @@ def build_frontend_html(dest_path):
       document.getElementById('imgSecondary').src = getImageUrl(r, p, prod);
     }
 
-    function stepRun(delta) {
-      const sel = document.getElementById('runSelect');
-      let idx = sel.selectedIndex + delta;
-      if (idx >= 0 && idx < sel.options.length) {
-        sel.selectedIndex = idx;
-        preloadRunImages(sel.value);
-        updateSingleViewer();
-      }
+    function onPane1RunChange() {
+      const rId = document.getElementById('pane1Run').value;
+      const runObj = manifest.runs.find(r => r.id === rId);
+      populatePeriodDropdown('pane1', runObj);
+      updatePane1();
     }
 
-    function stepProduct(delta) {
-      const prodIds = PRODUCTS.map(p => p.id);
-      let idx = prodIds.indexOf(currentProd) + delta;
-      if (idx < 0) idx = prodIds.length - 1;
-      if (idx >= prodIds.length) idx = 0;
-      const nextBtn = document.querySelector(`[data-prod="${prodIds[idx]}"]`);
-      if (nextBtn) setProduct(nextBtn);
+    function onPane2RunChange() {
+      const rId = document.getElementById('pane2Run').value;
+      const runObj = manifest.runs.find(r => r.id === rId);
+      populatePeriodDropdown('pane2', runObj);
+      updatePane2();
     }
 
     function toggleHelpModal(show) {
-      const modal = document.getElementById('helpModal');
-      modal.classList.toggle('open', show);
+      document.getElementById('helpModal').classList.toggle('open', show);
     }
 
     function onModalOverlayClick(e) {
@@ -811,30 +914,19 @@ def build_frontend_html(dest_path):
         f.write(html)
 
 # ==========================================
-# 8. MAIN PRODUCTION ENGINE
+# 8. MAIN PRODUCTION ENGINE & BACKFILLER
 # ==========================================
-def run_production():
-    init_dt = get_latest_cycle_dt()
+def process_single_cycle(init_dt):
     cycle_id = init_dt.strftime("%Y%m%d_%H")
     current_run_dir = RUNS_DIR / cycle_id
-    periods = build_synoptic_periods(init_dt)
-
-    flag_file = current_run_dir / "complete.json"
-    if current_run_dir.exists() and flag_file.exists():
-        print(f"\n==========================================")
-        print(f"Cycle {cycle_id} is already downloaded and fully processed.")
-        print(f"Skipping heavy downloads. Verifying manifest and HTML...")
-        print(f"==========================================")
-        update_manifest_and_html(periods)
-        print("Done! Exiting cleanly in < 3 seconds.")
-        return
-
     current_run_dir.mkdir(parents=True, exist_ok=True)
+    flag_file = current_run_dir / "complete.json"
 
     print(f"\n==========================================")
-    print(f"PROCESSING REFS ERO VIEWER: {cycle_id}")
+    print(f"PROCESSING REFS RUN: {cycle_id}")
     print(f"==========================================")
 
+    periods = build_synoptic_periods(init_dt)
     full_catalog = get_member_catalog(init_dt)
 
     test_task = get_member_file_info(full_catalog[0], 1)
@@ -968,9 +1060,29 @@ def run_production():
 
     with open(flag_file, "w") as f:
         json.dump({"cycle": cycle_id, "completed_at": datetime.now(timezone.utc).isoformat()}, f)
+    print(f"Cycle {cycle_id} marked complete.")
 
-    update_manifest_and_html(periods)
-    print(f"\nExecution Complete! Output archived in {current_run_dir}")
+def run_production():
+    print("==========================================")
+    print("CHECKING FOR REFS CYCLES TO PROCESS...")
+    print("==========================================")
+
+    pending_cycles = get_pending_and_available_cycles(max_lookback_hours=36)
+
+    if not pending_cycles:
+        print("All recent available cycles already processed and cached.")
+        update_manifest_and_html()
+        print("Manifest and viewer verified. Exiting cleanly.")
+        return
+
+    print(f"Found {len(pending_cycles)} pending cycle(s): {[c.strftime('%Y%m%d_%H') for c in pending_cycles]}")
+
+    # Process up to 3 pending cycles chronologically per execution
+    for cand_dt in pending_cycles[:3]:
+        process_single_cycle(cand_dt)
+
+    update_manifest_and_html()
+    print("\nBatch production and manifest update complete!")
 
 if __name__ == "__main__":
     run_production()
