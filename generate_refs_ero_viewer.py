@@ -61,7 +61,6 @@ def get_pending_and_available_cycles(max_lookback_hours=36):
         date_str = cand.strftime("%Y%m%d")
         cycle_id = cand.strftime("%Y%m%d_%H")
 
-        # Test availability of RRFS control f001 on AWS
         test_url = (
             f"https://noaa-rrfs-ops-pds.s3.amazonaws.com/rrfs.{date_str}/{cycle_hour:02d}/"
             f"rrfs.t{cycle_hour:02d}z.2dfld.3km.f001.conus.grib2.idx"
@@ -75,42 +74,58 @@ def get_pending_and_available_cycles(max_lookback_hours=36):
         except Exception:
             continue
 
-    # Sort oldest first so archives build chronologically
     pending.sort()
     return pending
 
 def build_synoptic_periods(init_dt):
+    """
+    Constructs synoptic periods anchored strictly to 12Z-to-12Z valid windows.
+    Labels dynamically by the ending valid date/time.
+    """
     cycle = init_dt.hour
     periods = []
 
+    def _format_name(end_dt, hours):
+        end_str = end_dt.strftime("%a %m/%d")
+        if hours < 24:
+            return f"Ending 12Z {end_str} ({hours}h)"
+        return f"Ending 12Z {end_str}"
+
     if cycle == 12:
-        periods.append({"id": "p1", "name": "Day 1", "f_start": 1, "f_end": 24, "hours": 24,
-                        "valid_start": init_dt, "valid_end": init_dt + timedelta(hours=24)})
-        periods.append({"id": "p2", "name": "Day 2", "f_start": 25, "f_end": 48, "hours": 24,
-                        "valid_start": init_dt + timedelta(hours=24), "valid_end": init_dt + timedelta(hours=48)})
-        periods.append({"id": "p3", "name": "Day 3", "f_start": 49, "f_end": 72, "hours": 24,
-                        "valid_start": init_dt + timedelta(hours=48), "valid_end": init_dt + timedelta(hours=72)})
+        p_configs = [
+            ("p1", 1, 24, 24, init_dt, init_dt + timedelta(hours=24)),
+            ("p2", 25, 48, 24, init_dt + timedelta(hours=24), init_dt + timedelta(hours=48)),
+            ("p3", 49, 72, 24, init_dt + timedelta(hours=48), init_dt + timedelta(hours=72)),
+        ]
     elif cycle == 18:
-        periods.append({"id": "p1", "name": "Day 1 (Partial 18h)", "f_start": 1, "f_end": 18, "hours": 18,
-                        "valid_start": init_dt, "valid_end": init_dt + timedelta(hours=18)})
-        periods.append({"id": "p2", "name": "Day 2", "f_start": 19, "f_end": 42, "hours": 24,
-                        "valid_start": init_dt + timedelta(hours=18), "valid_end": init_dt + timedelta(hours=42)})
-        periods.append({"id": "p3", "name": "Day 3", "f_start": 43, "f_end": 66, "hours": 24,
-                        "valid_start": init_dt + timedelta(hours=42), "valid_end": init_dt + timedelta(hours=66)})
+        p_configs = [
+            ("p1", 1, 18, 18, init_dt, init_dt + timedelta(hours=18)),
+            ("p2", 19, 42, 24, init_dt + timedelta(hours=18), init_dt + timedelta(hours=42)),
+            ("p3", 43, 66, 24, init_dt + timedelta(hours=42), init_dt + timedelta(hours=66)),
+        ]
     elif cycle == 0:
-        periods.append({"id": "p1", "name": "Day 1 (Remainder 12h)", "f_start": 1, "f_end": 12, "hours": 12,
-                        "valid_start": init_dt, "valid_end": init_dt + timedelta(hours=12)})
-        periods.append({"id": "p2", "name": "Day 2", "f_start": 13, "f_end": 36, "hours": 24,
-                        "valid_start": init_dt + timedelta(hours=12), "valid_end": init_dt + timedelta(hours=36)})
-        periods.append({"id": "p3", "name": "Day 3", "f_start": 37, "f_end": 60, "hours": 24,
-                        "valid_start": init_dt + timedelta(hours=36), "valid_end": init_dt + timedelta(hours=60)})
+        p_configs = [
+            ("p1", 1, 12, 12, init_dt, init_dt + timedelta(hours=12)),
+            ("p2", 13, 36, 24, init_dt + timedelta(hours=12), init_dt + timedelta(hours=36)),
+            ("p3", 37, 60, 24, init_dt + timedelta(hours=36), init_dt + timedelta(hours=60)),
+        ]
     elif cycle == 6:
-        periods.append({"id": "p1", "name": "Day 1 (Remainder 6h)", "f_start": 1, "f_end": 6, "hours": 6,
-                        "valid_start": init_dt, "valid_end": init_dt + timedelta(hours=6)})
-        periods.append({"id": "p2", "name": "Day 2", "f_start": 7, "f_end": 30, "hours": 24,
-                        "valid_start": init_dt + timedelta(hours=6), "valid_end": init_dt + timedelta(hours=30)})
-        periods.append({"id": "p3", "name": "Day 3", "f_start": 31, "f_end": 54, "hours": 24,
-                        "valid_start": init_dt + timedelta(hours=30), "valid_end": init_dt + timedelta(hours=54)})
+        p_configs = [
+            ("p1", 1, 6, 6, init_dt, init_dt + timedelta(hours=6)),
+            ("p2", 7, 30, 24, init_dt + timedelta(hours=6), init_dt + timedelta(hours=30)),
+            ("p3", 31, 54, 24, init_dt + timedelta(hours=30), init_dt + timedelta(hours=54)),
+        ]
+
+    for p_id, f_s, f_e, hrs, v_s, v_e in p_configs:
+        periods.append({
+            "id": p_id,
+            "name": _format_name(v_e, hrs),
+            "f_start": f_s,
+            "f_end": f_e,
+            "hours": hrs,
+            "valid_start": v_s,
+            "valid_end": v_e
+        })
 
     return periods
 
@@ -432,10 +447,13 @@ def build_frontend_html(dest_path):
       background: #1e293b; color: #cbd5e1; border: 1px solid var(--border);
       padding: 5px 11px; border-radius: 5px; font-size: 12px; font-weight: 600; cursor: pointer; transition: 0.15s;
     }
-    .btn:hover { background: #334155; color: #fff; }
+    .btn:hover:not(:disabled) { background: #334155; color: #fff; }
     .btn.active { background: var(--accent); color: #fff; border-color: var(--accent-hover); }
+    .btn:disabled {
+      opacity: 0.35; cursor: not-allowed; border-color: #1e293b; color: #64748b;
+    }
     .btn-ffg { background: #1e3a29; border-color: #2e593e; color: #a7f3d0; }
-    .btn-ffg:hover { background: #264e37; color: #fff; }
+    .btn-ffg:hover:not(:disabled) { background: #264e37; color: #fff; }
     .btn-ffg.active { background: #059669; border-color: #10b981; color: #fff; }
     .btn-help { background: #334155; color: #93c5fd; border-color: #475569; }
     .btn-help:hover { background: #475569; color: #fff; }
@@ -503,13 +521,13 @@ def build_frontend_html(dest_path):
     <div class="row">
       <div class="btn-group">
         <b>Model Run:</b>
-        <button class="btn" onclick="stepRun(-1)">▲ Newer</button>
+        <button class="btn" id="btnNewer" onclick="stepRun(-1)" title="Step to newer run (Arrow Up)">▲ Newer</button>
         <select id="runSelect" onchange="onMainRunChange()"></select>
-        <button class="btn" onclick="stepRun(1)">▼ Older</button>
+        <button class="btn" id="btnOlder" onclick="stepRun(1)" title="Step to older run (Arrow Down)">▼ Older</button>
       </div>
 
       <div class="btn-group" id="periodBox">
-        <b>Synoptic Period:</b>
+        <b>Valid Period:</b>
         <div id="periodButtons" class="btn-group"></div>
       </div>
 
@@ -577,15 +595,15 @@ def build_frontend_html(dest_path):
       </div>
       <div class="help-grid">
         <div class="help-section">
-          <h4>🌧️ Custom FFG Exceedance Probabilities (NMEP 40-km Swath)</h4>
+          <h4>🌧️ Custom FFG Exceedance Probabilities (Rolling Window Swaths)</h4>
           <div class="help-item">
             <b>1.0x FFG:</b> Evaluates 24-hr cumulative threat of flash flooding. Shows the 40-km neighborhood probability that any member's rolling 1-hr, 3-hr, or 6-hr QPF will exceed 100% of antecedent Flash Flood Guidance at least once during the synoptic period.
           </div>
           <div class="help-item">
-            <b>1.5x FFG:</b> Probability that rainfall reaches 150% of FFG. Signals moderate-to-severe flash flood risk where runoff easily overwhelms drainage basins.
+            <b>1.5x FFG:</b> Probability that rainfall reaches 150% of FFG. Signals moderate-to-severe flash flood risk where runoff easily overwhelms local drainage basins.
           </div>
           <div class="help-item">
-            <b>2.0x FFG:</b> Probability of rainfall reaching double (200%) local FFG. Highlights high risk for significant, life-threatening flash flooding and major infrastructure impacts.
+            <b>2.0x FFG:</b> Probability of rainfall reaching double (200%) local FFG. Highlighting high risk for significant, life-threatening flash flooding and severe infrastructure impacts.
           </div>
         </div>
 
@@ -612,7 +630,7 @@ def build_frontend_html(dest_path):
         <div class="help-section">
           <h4>🗺️ River Forecast Center (RFC) Antecedent FFG</h4>
           <div class="help-item">
-            <b>1-hr, 3-hr, 6-hr FFG:</b> Operational 5-km RFC Flash Flood Guidance mosaics (in inches) ingested at model initialization.
+            <b>1-hr, 3-hr, 6-hr FFG:</b> Operational 5-km RFC Flash Flood Guidance mosaics (in inches) ingested at model initialization. Shows rainfall required over 1, 3, or 6 hours to trigger flash flooding.
           </div>
         </div>
       </div>
@@ -628,6 +646,7 @@ def build_frontend_html(dest_path):
     let currentRunId = '';
     let currentProd = 'prob_1p0x';
     let currentPeriod = 'p1';
+    let currentValidEnd = '';
     let layoutMode = 'single';
     const preloadedImages = new Map();
 
@@ -652,7 +671,11 @@ def build_frontend_html(dest_path):
 
         currentRunId = manifest.latest || manifest.runs[0].id;
         const activeRun = manifest.runs.find(r => r.id === currentRunId) || manifest.runs[0];
-        if (activeRun.periods.length > 0) currentPeriod = activeRun.periods[0].id;
+        
+        if (activeRun.periods.length > 0) {
+          currentPeriod = activeRun.periods[0].id;
+          currentValidEnd = activeRun.periods[0].valid_end;
+        }
 
         const runSel = document.getElementById('runSelect');
         const optionsHtml = manifest.runs.map((r, i) => 
@@ -672,6 +695,7 @@ def build_frontend_html(dest_path):
         initSplitScreen(activeRun);
         preloadRunImages(currentRunId);
         updateSingleViewer();
+        updateNavButtons();
       } catch (e) {
         console.error("Manifest load failed.", e);
       }
@@ -694,7 +718,7 @@ def build_frontend_html(dest_path):
       document.getElementById('pane2Run').value = secondaryRun.id;
       populatePeriodDropdown('pane2', secondaryRun);
 
-      const matchP = findMatchingPeriod(activeRun, currentPeriod, secondaryRun);
+      const matchP = secondaryRun.periods.find(p => p.valid_end === currentValidEnd);
       document.getElementById('pane2Period').value = matchP ? matchP.id : secondaryRun.periods[0].id;
       document.getElementById('pane2Prod').value = manifest.runs.length > 1 ? currentProd : 'prob_2p0x';
     }
@@ -705,43 +729,58 @@ def build_frontend_html(dest_path):
       ).join('');
     }
 
-    function findMatchingPeriod(fromRunObj, fromPeriodId, toRunObj) {
-      if (!fromRunObj || !toRunObj || !fromRunObj.periods || !toRunObj.periods) return null;
-      const srcPeriod = fromRunObj.periods.find(p => p.id === fromPeriodId);
-      if (!srcPeriod) return toRunObj.periods[0] || null;
+    function updateNavButtons() {
+      const btnNewer = document.getElementById('btnNewer');
+      const btnOlder = document.getElementById('btnOlder');
+      const curIdx = manifest.runs.findIndex(r => r.id === currentRunId);
+      if (curIdx === -1) return;
 
-      const targetEnd = srcPeriod.valid_end;
-      // 1. Exact valid_end match across cycles
-      let match = toRunObj.periods.find(p => p.valid_end === targetEnd);
-      if (match) return match;
+      const isFfg = currentProd.startsWith('ffg_');
 
-      // 2. Fallback to closest valid_end
-      let minDiff = Infinity;
-      toRunObj.periods.forEach(p => {
-        let diff = Math.abs(new Date(p.valid_end) - new Date(targetEnd));
-        if (diff < minDiff) {
-          minDiff = diff;
-          match = p;
-        }
-      });
-      return match || toRunObj.periods[0];
+      if (isFfg) {
+        btnNewer.disabled = (curIdx <= 0);
+        btnOlder.disabled = (curIdx >= manifest.runs.length - 1);
+        btnNewer.title = btnNewer.disabled ? "No newer run available" : "Step to newer run (Arrow Up)";
+        btnOlder.title = btnOlder.disabled ? "No older run available" : "Step to older run (Arrow Down)";
+      } else {
+        const hasNewer = (curIdx > 0) && manifest.runs[curIdx - 1].periods.some(p => p.valid_end === currentValidEnd);
+        const hasOlder = (curIdx < manifest.runs.length - 1) && manifest.runs[curIdx + 1].periods.some(p => p.valid_end === currentValidEnd);
+
+        btnNewer.disabled = !hasNewer;
+        btnOlder.disabled = !hasOlder;
+        btnNewer.title = !hasNewer ? "No newer run covers this ending valid time" : "Step to newer run (Arrow Up)";
+        btnOlder.title = !hasOlder ? "Reached earliest run covering this ending valid time" : "Step to older run (Arrow Down)";
+      }
     }
 
-    function changeRun(newRunId) {
-      const oldRunObj = manifest.runs.find(r => r.id === currentRunId);
+    function changeRun(newRunId, targetPeriodId) {
       const newRunObj = manifest.runs.find(r => r.id === newRunId);
       if (!newRunObj) return;
 
-      if (!currentProd.startsWith('ffg_') && oldRunObj) {
-        const match = findMatchingPeriod(oldRunObj, currentPeriod, newRunObj);
-        if (match) currentPeriod = match.id;
-      }
-
       currentRunId = newRunId;
       document.getElementById('runSelect').value = newRunId;
+
+      if (targetPeriodId) {
+        currentPeriod = targetPeriodId;
+        const pObj = newRunObj.periods.find(p => p.id === targetPeriodId);
+        if (pObj) currentValidEnd = pObj.valid_end;
+      } else {
+        if (!currentProd.startsWith('ffg_')) {
+          const match = newRunObj.periods.find(p => p.valid_end === currentValidEnd);
+          if (match) {
+            currentPeriod = match.id;
+          } else {
+            const fallback = newRunObj.periods[newRunObj.periods.length - 1];
+            currentPeriod = fallback.id;
+            currentValidEnd = fallback.valid_end;
+          }
+        }
+      }
+
       renderPeriodButtons(newRunObj);
       preloadRunImages(newRunId);
       updateSingleViewer();
+      updateNavButtons();
     }
 
     function getImageUrl(runId, periodId, prod) {
@@ -786,25 +825,47 @@ def build_frontend_html(dest_path):
         pBox.style.pointerEvents = 'auto';
       }
       updateSingleViewer();
+      updateNavButtons();
     }
 
     function setPeriod(pId) {
       currentPeriod = pId;
       const activeRun = manifest.runs.find(r => r.id === currentRunId);
-      if (activeRun) renderPeriodButtons(activeRun);
+      if (activeRun) {
+        const pObj = activeRun.periods.find(p => p.id === pId);
+        if (pObj) currentValidEnd = pObj.valid_end;
+        renderPeriodButtons(activeRun);
+      }
       updateSingleViewer();
+      updateNavButtons();
     }
 
     function onMainRunChange() {
-      changeRun(document.getElementById('runSelect').value);
+      changeRun(document.getElementById('runSelect').value, null);
     }
 
     function stepRun(delta) {
-      const idx = manifest.runs.findIndex(r => r.id === currentRunId);
-      const nextIdx = idx + delta;
-      if (nextIdx >= 0 && nextIdx < manifest.runs.length) {
-        changeRun(manifest.runs[nextIdx].id);
+      const curIdx = manifest.runs.findIndex(r => r.id === currentRunId);
+      if (curIdx === -1) return;
+
+      const nextIdx = curIdx + delta;
+      if (nextIdx < 0 || nextIdx >= manifest.runs.length) return;
+
+      const isFfg = currentProd.startsWith('ffg_');
+      if (isFfg) {
+        changeRun(manifest.runs[nextIdx].id, null);
+        return;
       }
+
+      // Strict valid time lock: must cover currentValidEnd
+      const candidateRun = manifest.runs[nextIdx];
+      const matchP = candidateRun.periods.find(p => p.valid_end === currentValidEnd);
+      if (!matchP) {
+        // Stop stepping when runs for that valid date run out!
+        return;
+      }
+
+      changeRun(candidateRun.id, matchP.id);
     }
 
     function stepProduct(delta) {
@@ -1077,7 +1138,6 @@ def run_production():
 
     print(f"Found {len(pending_cycles)} pending cycle(s): {[c.strftime('%Y%m%d_%H') for c in pending_cycles]}")
 
-    # Process up to 3 pending cycles chronologically per execution
     for cand_dt in pending_cycles[:3]:
         process_single_cycle(cand_dt)
 
