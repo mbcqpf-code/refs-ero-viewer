@@ -432,20 +432,28 @@ def build_frontend_html(dest_path):
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
       display: flex; flex-direction: column; align-items: center;
     }
-    .header { width: 100%; max-width: 1320px; padding: 12px 20px 4px 20px; text-align: center; }
-    .header h2 { margin: 0 0 4px 0; font-size: 1.35rem; }
-    .header p { margin: 0; color: var(--muted); font-size: 0.85rem; }
+    .header { width: 100%; max-width: 1320px; padding: 10px 16px 2px 16px; text-align: center; }
+    .header h2 { margin: 0 0 2px 0; font-size: 1.25rem; }
+    .header p { margin: 0; color: var(--muted); font-size: 0.8rem; }
 
     .toolbar {
       width: 100%; max-width: 1320px; background: var(--panel); border: 1px solid var(--border);
-      border-radius: 8px; padding: 10px 14px; margin: 8px 0; box-sizing: border-box;
-      display: flex; flex-direction: column; gap: 8px;
+      border-radius: 8px; padding: 8px 12px; margin: 6px 0 8px 0; box-sizing: border-box;
+      display: flex; flex-direction: column; gap: 6px;
     }
-    .row { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; }
-    .btn-group { display: flex; gap: 4px; align-items: center; flex-wrap: wrap; }
+    .row {
+      display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px;
+    }
+    .btn-group {
+      display: flex; gap: 4px; align-items: center; flex-wrap: wrap;
+    }
+    .btn-group b {
+      font-size: 11.5px; color: #e2e8f0; margin-right: 2px; white-space: nowrap;
+    }
     .btn {
       background: #1e293b; color: #cbd5e1; border: 1px solid var(--border);
-      padding: 5px 11px; border-radius: 5px; font-size: 12px; font-weight: 600; cursor: pointer; transition: 0.15s;
+      padding: 4px 9px; border-radius: 4px; font-size: 11.5px; font-weight: 600; cursor: pointer; transition: 0.15s;
+      white-space: nowrap; line-height: 1.3;
     }
     .btn:hover:not(:disabled) { background: #334155; color: #fff; }
     .btn.active { background: var(--accent); color: #fff; border-color: var(--accent-hover); }
@@ -458,9 +466,16 @@ def build_frontend_html(dest_path):
     .btn-help { background: #334155; color: #93c5fd; border-color: #475569; }
     .btn-help:hover { background: #475569; color: #fff; }
     
+    .toolbar-divider {
+      border-left: 1px solid var(--border);
+      margin: 0 4px;
+      height: 16px;
+      display: inline-block;
+    }
+
     select {
       background: #0f172a; color: #fff; border: 1px solid var(--border);
-      padding: 4px 8px; border-radius: 5px; font-size: 12px; cursor: pointer;
+      padding: 3px 7px; border-radius: 4px; font-size: 11.5px; cursor: pointer;
     }
 
     .viewer-container {
@@ -507,7 +522,7 @@ def build_frontend_html(dest_path):
     .help-item:last-child { margin-bottom: 0; }
     .help-item b { color: #e2e8f0; }
 
-    .footer { margin: 12px 0 20px 0; color: var(--muted); font-size: 11.5px; }
+    .footer { margin: 10px 0 18px 0; color: var(--muted); font-size: 11.5px; }
     kbd { background: #1e293b; border: 1px solid #334155; padding: 2px 5px; border-radius: 3px; }
   </style>
 </head>
@@ -518,6 +533,7 @@ def build_frontend_html(dest_path):
   </div>
 
   <div class="toolbar" id="mainToolbar">
+    <!-- ROW 1: Temporal Controls (Model Run on left, Valid Period on right) -->
     <div class="row">
       <div class="btn-group">
         <b>Model Run:</b>
@@ -530,30 +546,31 @@ def build_frontend_html(dest_path):
         <b>Valid Period:</b>
         <div id="periodButtons" class="btn-group"></div>
       </div>
-
-      <div class="btn-group">
-        <b>Layout:</b>
-        <button class="btn active" id="btnSingle" onclick="setLayout('single')">Single</button>
-        <button class="btn" id="btnSplit" onclick="setLayout('split')">Split Screen</button>
-        <button class="btn btn-help" onclick="toggleHelpModal(true)" title="View explanation of products (Shortcut: ? or H)">ℹ️ Product Guide</button>
-      </div>
     </div>
 
-    <div class="row" style="border-top: 1px solid var(--border); padding-top: 8px;">
-      <div class="btn-group">
+    <!-- ROW 2: Meteorological Products (Left) & Layout / Help Controls (Right) -->
+    <div class="row" style="border-top: 1px solid var(--border); padding-top: 6px;">
+      <div class="btn-group" id="productGroup">
         <b>Product:</b>
         <button class="btn active" data-prod="prob_1p0x" onclick="setProduct(this)">1.0x FFG</button>
         <button class="btn" data-prod="prob_1p5x" onclick="setProduct(this)">1.5x FFG</button>
         <button class="btn" data-prod="prob_2p0x" onclick="setProduct(this)">2.0x FFG</button>
         <button class="btn" data-prod="refs_precomputed" onclick="setProduct(this)">Official REFS</button>
-        <span style="border-left: 1px solid var(--border); margin: 0 4px; height: 18px;"></span>
+        <span class="toolbar-divider"></span>
         <button class="btn" data-prod="coverage_min" onclick="setProduct(this)">Cov (Min)</button>
         <button class="btn" data-prod="coverage_avg" onclick="setProduct(this)">Cov (Mean)</button>
         <button class="btn" data-prod="coverage_max" onclick="setProduct(this)">Cov (Max)</button>
-        <span style="border-left: 1px solid var(--border); margin: 0 4px; height: 18px;"></span>
+        <span class="toolbar-divider"></span>
         <button class="btn btn-ffg" data-prod="ffg_1h" onclick="setProduct(this)">1-hr FFG</button>
         <button class="btn btn-ffg" data-prod="ffg_3h" onclick="setProduct(this)">3-hr FFG</button>
         <button class="btn btn-ffg" data-prod="ffg_6h" onclick="setProduct(this)">6-hr FFG</button>
+      </div>
+
+      <div class="btn-group">
+        <b>Layout:</b>
+        <button class="btn active" id="btnSingle" onclick="setLayout('single')">Single</button>
+        <button class="btn" id="btnSplit" onclick="setLayout('split')">Split</button>
+        <button class="btn btn-help" onclick="toggleHelpModal(true)" title="View explanation of products (Shortcut: ? or H)">ℹ️ Guide</button>
       </div>
     </div>
   </div>
@@ -857,11 +874,9 @@ def build_frontend_html(dest_path):
         return;
       }
 
-      // Strict valid time lock: must cover currentValidEnd
       const candidateRun = manifest.runs[nextIdx];
       const matchP = candidateRun.periods.find(p => p.valid_end === currentValidEnd);
       if (!matchP) {
-        // Stop stepping when runs for that valid date run out!
         return;
       }
 
