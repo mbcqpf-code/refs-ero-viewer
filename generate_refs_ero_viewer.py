@@ -45,14 +45,22 @@ FOOTPRINT_SUM = float(np.sum(CIRCULAR_FOOTPRINT))
 # ==========================================
 # 2. DYNAMIC CYCLE & PERIOD RESOLVER
 # ==========================================
+def check_url_exists(url):
+    try:
+        r = requests.head(url, timeout=4)
+        return r.status_code == 200
+    except Exception:
+        return False
+
 def get_pending_and_available_cycles(max_lookback_hours=36):
     """
-    Scans the last 36 hours for cycles available on AWS S3 that have not
-    yet completed locally. Returns them sorted chronologically (oldest first).
+    Scans the last 36 hours for cycles on AWS/NOMADS.
+    Waits until ensprod ffri.f60 is uploaded (or 4h elapsed since init).
+    Also detects previously cached runs missing Official REFS and queues a fast patch.
     """
     now = datetime.now(timezone.utc)
     anchor = now.replace(minute=0, second=0, microsecond=0)
-    pending = []
+    tasks = []
 
     for h_back in range(0, max_lookback_hours + 1, 6):
         cand = anchor - timedelta(hours=h_back)
@@ -60,28 +68,46 @@ def get_pending_and_available_cycles(max_lookback_hours=36):
         cand = cand.replace(hour=cycle_hour)
         date_str = cand.strftime("%Y%m%d")
         cycle_id = cand.strftime("%Y%m%d_%H")
+        age_hours = (now - cand).total_seconds() / 3600.0
 
-        test_url = (
+        s3_ffri_f60 = (
+            f"https://noaa-rrfs-ops-pds.s3.amazonaws.com/refs.{date_str}/{cycle_hour:02d}/"
+            f"ensprod/refs.t{cycle_hour:02d}z.ffri.f60.conus.grib2.idx"
+        )
+        nomads_ffri_f60 = (
+            f"https://nomads.ncep.noaa.gov/pub/data/nccf/com/refs/prod/refs.{date_str}/{cycle_hour:02d}/"
+            f"ensprod/refs.t{cycle_hour:02d}z.ffri.f60.conus.grib2.idx"
+        )
+        s3_rrfs_f01 = (
             f"https://noaa-rrfs-ops-pds.s3.amazonaws.com/rrfs.{date_str}/{cycle_hour:02d}/"
             f"rrfs.t{cycle_hour:02d}z.2dfld.3km.f001.conus.grib2.idx"
         )
-        try:
-            r = requests.head(test_url, timeout=4)
-            if r.status_code == 200:
-                flag_file = RUNS_DIR / cycle_id / "complete.json"
-                if not (flag_file.exists() and flag_file.stat().st_size > 0):
-                    pending.append(cand)
-        except Exception:
+
+        ffri_ready = check_url_exists(s3_ffri_f60) or check_url_exists(nomads_ffri_f60)
+        flag_file = RUNS_DIR / cycle_id / "complete.json"
+
+        if flag_file.exists() and flag_file.stat().st_size > 0:
+            try:
+                with open(flag_file, "r") as f:
+                    meta = json.load(f)
+                if meta.get("has_official_refs", False):
+                    continue  # Fully complete
+                elif ffri_ready:
+                    tasks.append((cand, "patch_refs_only"))
+            except Exception:
+                pass
             continue
 
-    pending.sort()
-    return pending
+        # Not processed yet: trigger once ffri_ready is True, OR after 4.0h if raw members exist
+        if ffri_ready:
+            tasks.append((cand, "full"))
+        elif age_hours >= 4.0 and check_url_exists(s3_rrfs_f01):
+            tasks.append((cand, "full"))
+
+    tasks.sort(key=lambda x: x[0])
+    return tasks
 
 def build_synoptic_periods(init_dt):
-    """
-    Constructs synoptic periods anchored strictly to 12Z-to-12Z valid windows.
-    Labels dynamically by the ending valid date/time.
-    """
     cycle = init_dt.hour
     periods = []
 
@@ -246,49 +272,63 @@ def get_aligned_ffg(ref_lats, ref_lons, init_dt):
     return aligned
 
 # ==========================================
-# 5. PRE-COMPUTED REFS PPFFG FETCHER
+# 5. PRE-COMPUTED REFS PPFFG FETCHER (S3 + NOMADS FALLBACK)
 # ==========================================
 def extract_precomputed_refs(init_dt, period):
     cycle = init_dt.hour
     date_str = init_dt.strftime("%Y%m%d")
     max_ppffg = None
+    ref_lats, ref_lons = None, None
+    files_extracted = 0
 
     def _fetch_fxx(fxx):
-        grib_url = f"https://noaa-rrfs-ops-pds.s3.amazonaws.com/refs.{date_str}/{cycle:02d}/ensprod/refs.t{cycle:02d}z.ffri.f{fxx:02d}.conus.grib2"
-        idx_url = f"{grib_url}.idx"
         dest = WORKDIR / f"refs_ppffg_f{fxx:02d}.grib2"
-
-        if dest.exists():
+        if dest.exists() and dest.stat().st_size > 1000:
             return True
-        try:
-            r = requests.get(idx_url, timeout=6)
-            if r.status_code != 200:
-                return False
-            lines = r.text.strip().split("\n")
-            starts, ends = [], []
-            for i, l in enumerate(lines):
-                if ":PPFFG:" in l:
-                    starts.append(int(l.split(":")[1]))
-                    ends.append(int(lines[i+1].split(":")[1]) - 1 if i + 1 < len(lines) else None)
-            if not starts:
-                return False
-            range_hdr = f"bytes={min(starts)}-{max([e for e in ends if e]) if None not in ends else ''}"
-            rg = requests.get(grib_url, headers={"Range": range_hdr}, timeout=20)
-            if rg.status_code in (200, 206):
-                with open(dest, "wb") as f:
-                    f.write(rg.content)
-                return True
-        except Exception:
-            return False
 
-    fxx_range = list(range(period["f_start"], period["f_end"] + 1))
-    with ThreadPoolExecutor(max_workers=16) as pool:
+        candidate_urls = [
+            f"https://noaa-rrfs-ops-pds.s3.amazonaws.com/refs.{date_str}/{cycle:02d}/ensprod/refs.t{cycle:02d}z.ffri.f{fxx:02d}.conus.grib2",
+            f"https://nomads.ncep.noaa.gov/pub/data/nccf/com/refs/prod/refs.{date_str}/{cycle:02d}/ensprod/refs.t{cycle:02d}z.ffri.f{fxx:02d}.conus.grib2",
+        ]
+        headers = {"User-Agent": "REFS-ERO-Viewer/1.0"}
+
+        for grib_url in candidate_urls:
+            idx_url = f"{grib_url}.idx"
+            try:
+                r = requests.get(idx_url, headers=headers, timeout=8)
+                if r.status_code != 200:
+                    continue
+                lines = r.text.strip().split("\n")
+                starts, ends = [], []
+                for i, l in enumerate(lines):
+                    if ":PPFFG:" in l:
+                        starts.append(int(l.split(":")[1]))
+                        ends.append(int(lines[i+1].split(":")[1]) - 1 if i + 1 < len(lines) else None)
+                if not starts:
+                    continue
+                range_hdr = f"bytes={min(starts)}-{max([e for e in ends if e]) if None not in ends else ''}"
+                rg = requests.get(grib_url, headers={"Range": range_hdr, **headers}, timeout=20)
+                if rg.status_code in (200, 206) and len(rg.content) > 1000:
+                    with open(dest, "wb") as f:
+                        f.write(rg.content)
+                    return True
+            except Exception:
+                continue
+        return False
+
+    # Official REFS ensprod runs out to f60
+    fxx_range = [f for f in range(period["f_start"], period["f_end"] + 1) if f <= 60]
+    if not fxx_range:
+        return None, None, None, False
+
+    with ThreadPoolExecutor(max_workers=12) as pool:
         pool.map(_fetch_fxx, fxx_range)
 
     for fxx in fxx_range:
         fpath = WORKDIR / f"refs_ppffg_f{fxx:02d}.grib2"
         if not fpath.exists():
             continue
+        files_extracted += 1
         for n in [1, 3, 6]:
             s_hr = fxx - n
             if s_hr < period["f_start"] - 1:
@@ -297,6 +337,9 @@ def extract_precomputed_refs(init_dt, period):
                 ds = xr.open_dataset(fpath, engine="cfgrib", backend_kwargs={"filter_by_keys": {"stepRange": f"{s_hr}-{fxx}"}, "indexpath": ""})
                 v = "ppffg" if hasattr(ds, "ppffg") else list(ds.data_vars)[0]
                 arr = ds[v].values.astype(np.float32)
+                if ref_lats is None:
+                    ref_lats = ds.latitude.values
+                    ref_lons = ds.longitude.values
                 max_ppffg = arr if max_ppffg is None else np.maximum(max_ppffg, arr)
                 ds.close()
             except Exception:
@@ -304,10 +347,11 @@ def extract_precomputed_refs(init_dt, period):
         if fpath.exists():
             fpath.unlink()
 
+    success = files_extracted > 0
     if max_ppffg is not None:
         smoothed = ndimage.gaussian_filter(np.nan_to_num(max_ppffg, nan=0.0), sigma=4.0)
-        return np.where(smoothed >= 5.0, smoothed, np.nan)
-    return None
+        return np.where(smoothed >= 5.0, smoothed, np.nan), ref_lats, ref_lons, success
+    return None, ref_lats, ref_lons, success
 
 # ==========================================
 # 6. GRAPHICS RENDERING SYSTEM
@@ -533,7 +577,6 @@ def build_frontend_html(dest_path):
   </div>
 
   <div class="toolbar" id="mainToolbar">
-    <!-- ROW 1: Temporal Controls (Model Run on left, Valid Period on right) -->
     <div class="row">
       <div class="btn-group">
         <b>Model Run:</b>
@@ -548,7 +591,6 @@ def build_frontend_html(dest_path):
       </div>
     </div>
 
-    <!-- ROW 2: Meteorological Products (Left) & Layout / Help Controls (Right) -->
     <div class="row" style="border-top: 1px solid var(--border); padding-top: 6px;">
       <div class="btn-group" id="productGroup">
         <b>Product:</b>
@@ -576,7 +618,6 @@ def build_frontend_html(dest_path):
   </div>
 
   <div class="viewer-container" id="viewerContainer">
-    <!-- PANE 1 -->
     <div class="viewer-card" id="cardPrimary">
       <div class="pane-toolbar" id="pane1Bar">
         <span style="font-weight:bold; color:#60a5fa;">Pane 1 (Left):</span>
@@ -589,7 +630,6 @@ def build_frontend_html(dest_path):
       <img id="imgPrimary" src="" alt="Primary REFS Graphic">
     </div>
 
-    <!-- PANE 2 -->
     <div class="viewer-card" id="cardSecondary" style="display:none;">
       <div class="pane-toolbar" id="pane2Bar">
         <span style="font-weight:bold; color:#f59e0b;">Pane 2 (Right):</span>
@@ -603,7 +643,6 @@ def build_frontend_html(dest_path):
     </div>
   </div>
 
-  <!-- HELP / PRODUCT GUIDE MODAL -->
   <div id="helpModal" class="modal-overlay" onclick="onModalOverlayClick(event)">
     <div class="modal-content" onclick="event.stopPropagation()">
       <div class="modal-header">
@@ -757,16 +796,12 @@ def build_frontend_html(dest_path):
       if (isFfg) {
         btnNewer.disabled = (curIdx <= 0);
         btnOlder.disabled = (curIdx >= manifest.runs.length - 1);
-        btnNewer.title = btnNewer.disabled ? "No newer run available" : "Step to newer run (Arrow Up)";
-        btnOlder.title = btnOlder.disabled ? "No older run available" : "Step to older run (Arrow Down)";
       } else {
         const hasNewer = (curIdx > 0) && manifest.runs[curIdx - 1].periods.some(p => p.valid_end === currentValidEnd);
         const hasOlder = (curIdx < manifest.runs.length - 1) && manifest.runs[curIdx + 1].periods.some(p => p.valid_end === currentValidEnd);
 
         btnNewer.disabled = !hasNewer;
         btnOlder.disabled = !hasOlder;
-        btnNewer.title = !hasNewer ? "No newer run covers this ending valid time" : "Step to newer run (Arrow Up)";
-        btnOlder.title = !hasOlder ? "Reached earliest run covering this ending valid time" : "Step to older run (Arrow Down)";
       }
     }
 
@@ -876,9 +911,7 @@ def build_frontend_html(dest_path):
 
       const candidateRun = manifest.runs[nextIdx];
       const matchP = candidateRun.periods.find(p => p.valid_end === currentValidEnd);
-      if (!matchP) {
-        return;
-      }
+      if (!matchP) return;
 
       changeRun(candidateRun.id, matchP.id);
     }
@@ -992,6 +1025,37 @@ def build_frontend_html(dest_path):
 # ==========================================
 # 8. MAIN PRODUCTION ENGINE & BACKFILLER
 # ==========================================
+def patch_official_refs_only(init_dt):
+    """Fast-path repair: fetches only Official REFS ffri for an already-processed cycle."""
+    cycle_id = init_dt.strftime("%Y%m%d_%H")
+    current_run_dir = RUNS_DIR / cycle_id
+    flag_file = current_run_dir / "complete.json"
+    periods = build_synoptic_periods(init_dt)
+
+    print(f"\n>>> Patching missing Official REFS (ffri) for cached cycle: {cycle_id}")
+    any_official_ok = False
+
+    for p in periods:
+        p_id = p["id"]
+        valid_range_str = f"Valid: {p['valid_start'].strftime('%Y-%m-%d %H')}Z – {p['valid_end'].strftime('%Y-%m-%d %H')}Z"
+        refs_ppffg, ref_lats, ref_lons, ok = extract_precomputed_refs(init_dt, p)
+        if ok:
+            any_official_ok = True
+            render_plot(refs_ppffg, ref_lats, ref_lons,
+                        f"REFS {init_dt.strftime('%Y%m%d %H')}z: Official Pre-Computed Max FFG Exceedance",
+                        f"{p['name']} | {valid_range_str} (NCEP Operational ffri)",
+                        "Official REFS Exceedance Probability (%) [Smoothed]",
+                        f"{p_id}_refs_precomputed.png", current_run_dir, plot_type="prob")
+            print(f"    -> Patched {p_id}_refs_precomputed.png")
+
+    if any_official_ok:
+        with open(flag_file, "w") as f:
+            json.dump({
+                "cycle": cycle_id,
+                "completed_at": datetime.now(timezone.utc).isoformat(),
+                "has_official_refs": True
+            }, f)
+
 def process_single_cycle(init_dt):
     cycle_id = init_dt.strftime("%Y%m%d_%H")
     current_run_dir = RUNS_DIR / cycle_id
@@ -1026,6 +1090,8 @@ def process_single_cycle(init_dt):
             f"ffg_{dur_key}.png", current_run_dir, plot_type="ffg"
         )
         print(f" -> Generated ffg_{dur_key}.png")
+
+    any_official_ok = False
 
     for p in periods:
         p_id = p["id"]
@@ -1108,7 +1174,9 @@ def process_single_cycle(init_dt):
                         sub_title, "40-km Neighborhood Probability of Exceedance (%) [Smoothed]",
                         fname, current_run_dir, plot_type="prob")
 
-        refs_ppffg = extract_precomputed_refs(init_dt, p)
+        refs_ppffg, _, _, refs_ok = extract_precomputed_refs(init_dt, p)
+        if refs_ok:
+            any_official_ok = True
         render_plot(refs_ppffg, ref_lats, ref_lons,
                     f"REFS {init_dt.strftime('%Y%m%d %H')}z: Official Pre-Computed Max FFG Exceedance",
                     f"{p['name']} | {valid_range_str} (NCEP Operational ffri)",
@@ -1135,26 +1203,33 @@ def process_single_cycle(init_dt):
         gc.collect()
 
     with open(flag_file, "w") as f:
-        json.dump({"cycle": cycle_id, "completed_at": datetime.now(timezone.utc).isoformat()}, f)
-    print(f"Cycle {cycle_id} marked complete.")
+        json.dump({
+            "cycle": cycle_id,
+            "completed_at": datetime.now(timezone.utc).isoformat(),
+            "has_official_refs": any_official_ok
+        }, f)
+    print(f"Cycle {cycle_id} marked complete (has_official_refs={any_official_ok}).")
 
 def run_production():
     print("==========================================")
     print("CHECKING FOR REFS CYCLES TO PROCESS...")
     print("==========================================")
 
-    pending_cycles = get_pending_and_available_cycles(max_lookback_hours=36)
+    pending_tasks = get_pending_and_available_cycles(max_lookback_hours=36)
 
-    if not pending_cycles:
+    if not pending_tasks:
         print("All recent available cycles already processed and cached.")
         update_manifest_and_html()
         print("Manifest and viewer verified. Exiting cleanly.")
         return
 
-    print(f"Found {len(pending_cycles)} pending cycle(s): {[c.strftime('%Y%m%d_%H') for c in pending_cycles]}")
+    print(f"Found {len(pending_tasks)} pending task(s): {[(c.strftime('%Y%m%d_%H'), m) for c, m in pending_tasks]}")
 
-    for cand_dt in pending_cycles[:3]:
-        process_single_cycle(cand_dt)
+    for cand_dt, mode in pending_tasks[:4]:
+        if mode == "patch_refs_only":
+            patch_official_refs_only(cand_dt)
+        else:
+            process_single_cycle(cand_dt)
 
     update_manifest_and_html()
     print("\nBatch production and manifest update complete!")
